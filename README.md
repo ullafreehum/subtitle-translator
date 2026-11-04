@@ -56,6 +56,12 @@ ve eğitmenlerinizin adlarını ekleyebilirsiniz. Terimlerin nasıl seçildiği 
 
 ## Kurulum
 
+**En kolayı – taşınabilir sürüm (kurulum yok):** [Releases](https://github.com/ullafreehum/subtitle-translator/releases/latest)
+sayfasından **`AltyaziCevirici-…-portable-win64.exe`** dosyasını indirin, çalıştırın, bir klasör seçip
+**Extract** deyin ve oluşan klasördeki **`SubtitleTranslator.exe`**'yi açın. Python ya da FFmpeg gerekmez.
+
+**Kaynaktan kurmak isterseniz:**
+
 1. Sağ üstteki **Code ▸ Download ZIP** ile indirin ve **sağ tık ▸ Tümünü ayıkla** deyin.
 2. Klasördeki **`setup.bat`** dosyasına çift tıklayın. Gerekli her şeyi kurar ve masaüstüne bir kısayol koyar
    (bir kereye mahsus; yaklaşık 1,5 GB indirir).
