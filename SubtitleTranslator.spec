@@ -21,14 +21,14 @@ SITE = sysconfig.get_paths()["purelib"]
 # App modules. app.py imports most of them, but list them so lazy/dynamic imports are kept.
 # i18n_* text tables are imported by name at runtime, so PyInstaller must be told about them.
 APP_MODULES = ["editor", "engine", "translation", "subtitles", "glossary", "cuda_setup",
-               "i18n", "i18n_app", "i18n_editor", "i18n_engine"]
+               "i18n", "i18n_app", "i18n_editor", "i18n_engine", "transcript"]
 hiddenimports = []
 for mod in APP_MODULES:
     if os.path.exists(os.path.join(HERE, mod + ".py")):
         hiddenimports.append(mod)
     else:
         print(f"[spec] note: {mod}.py not found, skipped")
-hiddenimports += ["faster_whisper", "ctranslate2", "deep_translator", "tkinterdnd2", "av"]
+hiddenimports += ["faster_whisper", "ctranslate2", "deep_translator", "tkinterdnd2", "av", "docx"]
 
 datas = []
 for name in ("glossary.example.txt", "README.md", "README.en.md"):  # READMEs: Help > User guide
@@ -37,6 +37,7 @@ for name in ("glossary.example.txt", "README.md", "README.en.md"):  # READMEs: H
 for name in ("icon.ico", "icon.png"):
     datas.append((os.path.join(HERE, "assets", name), "assets"))
 datas += collect_data_files("faster_whisper")    # assets/silero_vad_v6.onnx (voice detection)
+datas += collect_data_files("docx")              # python-docx's default.docx template (transcript export)
 # tkinterdnd2 brings its own PyInstaller hook (bundles tkdnd for win-x64 only).
 
 binaries = collect_dynamic_libs("ctranslate2")   # ctranslate2.dll, libiomp5md.dll, ...

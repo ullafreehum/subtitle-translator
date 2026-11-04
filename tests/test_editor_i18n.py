@@ -192,6 +192,7 @@ def test_table() -> None:
     used = set(re.findall(r"""["'](ed_[a-z_]+)["']""", source))
     used |= {f"ed_burn_position_{v}" for v in editor.POSITIONS}
     used |= {f"ed_burn_size_{v}" for v in editor.SIZES}
+    used |= {f"ed_transcript_{v}" for v in editor.TRANSCRIPT_FORMATS}
     check(not used - set(STRINGS), f"keys used by editor.py but missing: {sorted(used - set(STRINGS))}")
     check(not set(STRINGS) - used, f"unused keys in i18n_editor.py: {sorted(set(STRINGS) - used)}")
 
@@ -297,7 +298,7 @@ def run_editor(lang: str) -> None:
                 "ed_btn_delete", "ed_btn_undo", "ed_btn_find", "ed_start", "ed_end",
                 "ed_translation", "ed_original", "ed_burn_frame", "ed_btn_save", "ed_btn_burn",
                 "ed_btn_cancel", "ed_btn_open_folder", "ed_burn_position", "ed_burn_size",
-                "ed_burn_font", "ed_burn_box"):
+                "ed_burn_font", "ed_burn_box", "ed_btn_transcript"):
         check(t(key) in texts, f"[{lang}] {key} shown as {t(key)!r}")
     check(ed.cue_label.cget("text") == t("ed_cue_n", n=1), f"[{lang}] cue label")
     stats = ed.stats_label.cget("text")
@@ -432,6 +433,117 @@ def run_editor(lang: str) -> None:
     root.destroy()
 
 
+def run_transcript_export(lang: str) -> None:
+    """Editor > Export as transcript: saves unsaved edits first, then calls
+    transcript.export_srt_transcript (fake) with the chosen format and timestamps."""
+    i18n.set_language(lang)
+    editor._transcript_choice.update(fmt="docx", timestamps=False)   # a new session
+    folder = os.path.join(TMP, "transcript_" + lang)
+    srt, orig = make_srts(folder)
+    root = tk.Tk()
+    root.withdraw()
+    real_get, real_ask = editor.get_transcript, editor.filedialog.asksaveasfilename
+    asked = {}
+
+    def ask(**kw):
+        asked.update(kw)
+        return asked.get("answer", "")
+
+    editor.get_transcript = lambda: fake_engine
+    editor.filedialog.asksaveasfilename = ask
+    try:
+        ed = editor.open_editor(root, os.path.join(folder, "missing.mp4"), srt, original_srt=orig)
+        pump(root, 0.2)
+        ed.select(0)
+        ed.text_box.insert("end", " (düzeltildi)")
+        ed._on_text_edit()
+        check(ed.dirty, f"[{lang}] edited before export")
+        ed.transcript_btn.invoke()
+        pump(root, 0.2)
+        dlg = ed._transcript_dialog
+        check(dlg is not None and dlg.winfo_exists() and dlg.title() == t("ed_transcript_title"),
+              f"[{lang}] export dialog opens")
+        texts = widget_texts(dlg)
+        for key in ("ed_transcript_format", "ed_transcript_docx", "ed_transcript_txt",
+                    "ed_transcript_timestamps", "ed_transcript_saved_first", "ed_transcript_save",
+                    "ed_btn_cancel"):
+            check(t(key) in texts, f"[{lang}] export dialog shows {t(key)!r}: {texts}")
+        check(t("ed_transcript_from", name="talk.tr.srt") in texts, f"[{lang}] dialog names the SRT")
+        check_language(texts, lang, "export dialog")
+        check(dlg.fmt_var.get() == "docx" and not dlg.timestamps_var.get(),
+              f"[{lang}] Word without timestamps by default")
+
+        # File dialog cancelled: nothing written, nothing saved.
+        fake_engine.transcript_calls.clear()
+        check(dlg.export() is None and not fake_engine.transcript_calls and ed.dirty,
+              f"[{lang}] cancelled file dialog does nothing")
+        check(asked.get("initialfile") == "talk.tr.docx" and asked.get("initialdir") == folder,
+              f"[{lang}] default name next to the SRT: {asked}")
+
+        dlg.fmt_var.set("txt")
+        dlg.timestamps_var.set(True)
+        out = os.path.join(folder, "döküm.txt")
+        asked["answer"] = out
+        DIALOGS.clear()
+        ANSWERS["askyesno"] = False          # "Open it now?"
+        check(dlg.export() == out, f"[{lang}] export returns the file")
+        check(fake_engine.transcript_calls == [(ed.srt_path, out, "txt", True)],
+              f"[{lang}] export_srt_transcript called: {fake_engine.transcript_calls}")
+        check(not ed.dirty and "(düzeltildi)" in editor.subtitles.read_srt(srt)[0].text,
+              f"[{lang}] unsaved edits saved before the export")
+        with open(out, encoding="utf-8") as f:
+            check("(düzeltildi)" in f.read(), f"[{lang}] transcript made from the saved subtitles")
+        check(DIALOGS and DIALOGS[-1][2] == t("ed_transcript_done", path=out),
+              f"[{lang}] done message: {DIALOGS}")
+        check(ed.status_var.get() == t("ed_transcript_done_status", name="döküm.txt"),
+              f"[{lang}] status after export: {ed.status_var.get()!r}")
+        check(not dlg.winfo_exists(), f"[{lang}] dialog closed after export")
+
+        # The last choice is offered again; a missing transcript.py is explained.
+        ed.export_transcript()
+        pump(root, 0.1)
+        dlg = ed._transcript_dialog
+        check(dlg.fmt_var.get() == "txt" and dlg.timestamps_var.get(), f"[{lang}] choice remembered")
+        check(t("ed_transcript_saved_first") not in widget_texts(dlg),
+              f"[{lang}] no unsaved hint when everything is saved")
+
+        def missing():
+            raise ImportError("No module named 'transcript'")
+
+        editor.get_transcript = missing
+        DIALOGS.clear()
+        check(dlg.export() is None and dlg.winfo_exists(), f"[{lang}] failed export keeps the dialog")
+        msg = DIALOGS[-1][2] if DIALOGS else ""
+        check(DIALOGS and DIALOGS[-1][0] == "showerror" and msg.startswith(
+            t("ed_transcript_failed", reason="").strip()) and "transcript.py" in msg,
+              f"[{lang}] missing module explained: {DIALOGS}")
+        dlg.destroy()
+        ed.destroy()
+    finally:
+        editor.get_transcript, editor.filedialog.asksaveasfilename = real_get, real_ask
+        ANSWERS.clear()
+        root.destroy()
+
+
+def test_transcript_export() -> None:
+    for lang in ("tr", "en"):
+        run_transcript_export(lang)
+    # The real transcript.py, called the way the dialog calls it.
+    try:
+        import transcript  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        print(f"   (transcript.py not available, real export not checked: {exc})")
+        return
+    srt, _ = make_srts(os.path.join(TMP, "transcript_real"))
+    for fmt in editor.TRANSCRIPT_FORMATS:
+        out = os.path.join(TMP, "transcript_real", "talk." + fmt)
+        try:
+            path = editor.write_transcript(srt, out, fmt, True)
+            check(os.path.isfile(path) and os.path.getsize(path) > 0, f"real {fmt} transcript written")
+        except Exception as exc:  # noqa: BLE001
+            check(False, f"real {fmt} transcript: {exc!r}")
+
+
 def test_editor_tr() -> None:
     run_editor("tr")
 
@@ -494,7 +606,7 @@ def main() -> int:
     editor.enable_dpi_awareness()
     try:
         for test in (test_table, test_helpers, test_burn_options, test_editor_tr, test_editor_en,
-                     test_open_language_kept, test_standalone):
+                     test_transcript_export, test_open_language_kept, test_standalone):
             print("==", test.__name__)
             test()
     finally:

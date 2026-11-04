@@ -55,6 +55,10 @@ PATTERNS: list[tuple[str, dict[str, str]]] = [
      {"tr": "Bu videoda ses yok; altyazıya dökülecek bir konuşma bulunmuyor."}),
     (r"Extracting audio with ffmpeg\.\.\.",
      {"tr": "Videonun sesi alınıyor (ffmpeg)..."}),
+    (r"Extracting audio with ffmpeg \(with noise and echo reduction\)\.\.\.",
+     {"tr": "Videonun sesi alınıyor (ffmpeg, gürültü ve yankı azaltılarak)..."}),
+    (r"Audio length: " + _TIME + r"\.",
+     {"tr": "Ses süresi: {time}."}),
     (r"Could not read the sound of this video \(ffmpeg failed\)\.",
      {"tr": "Bu videonun sesi okunamadı (ffmpeg hata verdi)."}),
 
@@ -141,12 +145,31 @@ PATTERNS: list[tuple[str, dict[str, str]]] = [
      {"tr": "Bu videoda konuşma bulunamadı (yalnızca sessizlik, müzik ya da gürültü olabilir)."}),
     (r"Transcription finished: (?P<n>\d+) subtitles\. Saved (?P<name>.+)",
      {"tr": "Konuşma tanıma bitti: {n} altyazı. Kaydedildi: {name}"}),
+    (r"Freed the speech recognition model from the GPU memory \(room for the large translation model\)\.",
+     {"tr": "Konuşma tanıma modeli ekran kartı (GPU) belleğinden çıkarıldı (büyük çeviri modeline yer açmak için)."}),
+    (r"Freed the speech recognition model from memory\.",
+     {"tr": "Konuşma tanıma modeli bellekten çıkarıldı."}),
+
+    # ---------------------------------------------------------------- resuming an interrupted run
+    (r"Continuing from " + _TIME + r" \(previous run was interrupted\)\.",
+     {"tr": "{time} anından devam ediliyor (önceki çalışma yarıda kalmıştı)."}),
+    (r"Speech recognition was already finished by the previous \(interrupted\) run; using its result\.",
+     {"tr": "Konuşma tanıma, yarıda kalan önceki çalışmada zaten bitmişti; onun sonucu kullanılıyor."}),
+    (r"Could not save the progress of speech recognition \((?P<reason>.+)\); "
+     r"an interrupted run would start again from the beginning\.",
+     {"tr": "Konuşma tanımanın ilerlemesi kaydedilemiyor ({reason}); yarıda kalırsa baştan başlanacak."}),
 
     # ---------------------------------------------------------------- saving files
     (r"Saved subtitled video: (?P<path>.+)",
      {"tr": "Altyazılı video kaydedildi: {path}"}),
-    (r"Saved (?P<name>[^\\/:]+\.(?:srt|vtt))",
+    (r"Saved (?P<name>[^\\/:]+\.(?:srt|vtt|transcript\.(?:docx|txt|md)))",
      {"tr": "Kaydedildi: {name}"}),
+    (r"Could not save the transcript (?P<name>.+?\.transcript\.(?:docx|txt|md)) \((?P<detail>.*)\)\.",
+     {"tr": "Metin dökümü kaydedilemedi: {name} ({detail})."}),
+    (r"Unknown transcript format: (?P<fmt>.+)",
+     {"tr": "Bilinmeyen metin dökümü biçimi: {fmt}"}),
+    (r"Word export needs python-docx \(run setup\.bat again\)\.",
+     {"tr": "Word dosyası için python-docx gerekiyor (setup.bat dosyasını yeniden çalıştırın)."}),
     (r"The previous (?P<name>.+?) was kept as (?P<backup>.+\.bak-\d{8}-\d{6})",
      {"tr": "{name} dosyasının önceki hâli {backup} adıyla saklandı."}),
     (r"Could not save the subtitles \((?P<reason>.+)\)\. Choose another output folder\.",

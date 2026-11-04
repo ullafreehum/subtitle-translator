@@ -486,15 +486,25 @@ def build_cues(segments: list[dict], max_chars_per_line: int = 42, max_lines: in
     Words of all segments are re-grouped into cues (see _CuePlanner), then times are
     adjusted for reading speed, minimum duration and gaps, and texts are wrapped.
     """
+    raw = _plan_cues(segments, max_chars_per_line, max_lines, max_duration, min_duration, max_cps, min_gap)
+    return _finish_cues(raw, max_chars_per_line, max_lines, max_duration, min_duration, max_cps, min_gap)
+
+
+def _plan_cues(segments, width, max_lines, max_duration, min_duration, max_cps, min_gap):
+    """(speech_start, speech_end, text) of each cue, before the final timing."""
     toks = _tokens(segments)
     if not toks:
         return []
-    planner = _CuePlanner(toks, max_chars_per_line, max_lines, max_duration,
-                          min_duration, max_cps, min_gap)
-    raw = [(toks[i].start, toks[j - 1].end, _join(toks[i:j])) for i, j in planner.plan()]
+    planner = _CuePlanner(toks, width, max_lines, max_duration, min_duration, max_cps, min_gap)
+    return [(toks[i].start, toks[j - 1].end, _join(toks[i:j])) for i, j in planner.plan()]
+
+
+def _finish_cues(raw, width, max_lines, max_duration, min_duration, max_cps, min_gap) -> list[Cue]:
+    if not raw:
+        return []
     cues = _time_cues(raw, max_duration, min_duration, max_cps, min_gap)
     for cue in cues:
-        cue.text = wrap_text(cue.text, max_chars_per_line, max_lines)
+        cue.text = wrap_text(cue.text, width, max_lines)
     return cues
 
 
@@ -527,7 +537,64 @@ def _time_cues(raw, max_duration, min_duration, max_cps, min_gap) -> list[Cue]:
         ends[k] = max(min(ends[k], limit(k)), starts[k] + 0.1)
         if k + 1 < m:
             starts[k + 1] = max(starts[k + 1], ends[k] + min_gap)
-    return [Cue(round(s, 3), round(e, 3), r[2]) for s, e, r in zip(starts, ends, raw)]
+    # Whole milliseconds; rounding must not eat into the minimum gap.
+    ms_starts = [round(s * 1000) for s in starts]
+    ms_ends = [round(e * 1000) for e in ends]
+    gap_ms = round(min_gap * 1000)
+    for k in range(m - 1):
+        if ms_starts[k + 1] - ms_ends[k] < gap_ms:
+            ms_starts[k + 1] = ms_ends[k] + gap_ms
+            ms_ends[k + 1] = max(ms_ends[k + 1], ms_starts[k + 1] + 100)
+    return [Cue(s / 1000, e / 1000, r[2]) for s, e, r in zip(ms_starts, ms_ends, raw)]
+
+
+def cues_for_texts(items: list[tuple[list[tuple[float, float]], str]], max_chars_per_line: int = 42,
+                   max_lines: int = 2, max_duration: float = 6.0, min_duration: float = 1.0,
+                   max_cps: float = 17.0, min_gap: float = 0.08) -> list[Cue]:
+    """Lay out texts over given times as readable cues (same rules as build_cues).
+
+    items: (intervals, text) per text, e.g. a translated sentence and the (start, end) times
+    of the original cues it translates. The words are spread over the intervals in proportion
+    to their width, skipping the pauses between intervals, so cues are split where the speaker
+    paused; a single interval is the same as a segment without word timestamps. Each text
+    gets cues of its own (a cue never mixes two texts); timing is shared, so cues never
+    overlap and keep `min_gap` between them.
+    """
+    raw = []
+    for intervals, text in items:
+        spans = [(float(s), max(float(e), float(s))) for s, e in intervals]
+        units = _units(_clean(text or ""))
+        if not spans or not units:
+            continue
+        weights = [max(1, _width(sep + unit)) for sep, unit in units]
+        total_w = sum(weights)
+        speech = sum(e - s for s, e in spans) or 1e-6
+
+        def at(pos: float, k: int) -> float:
+            """Time of position `pos` (0..speech) inside interval k (clamped to it)."""
+            before = sum(e - s for s, e in spans[:k])
+            s, e = spans[k]
+            return min(max(s + pos - before, s), e)
+
+        def interval_of(pos: float) -> int:
+            acc = 0.0
+            for k, (s, e) in enumerate(spans):
+                acc += e - s
+                if pos < acc:
+                    return k
+            return len(spans) - 1
+
+        words, pos = [], 0.0
+        for (sep, unit), wgt in zip(units, weights):
+            d = speech * wgt / total_w
+            k = interval_of(pos + d / 2)              # each word inside one interval
+            words.append({"start": at(pos, k), "end": at(pos + d, k), "word": (" " if sep else "") + unit})
+            pos += d
+        segment = {"start": spans[0][0], "end": spans[-1][1], "text": text, "words": words}
+        raw += _plan_cues([segment], max_chars_per_line, max_lines, max_duration, min_duration,
+                          max_cps, min_gap)
+    raw.sort(key=lambda r: r[0])
+    return _finish_cues(raw, max_chars_per_line, max_lines, max_duration, min_duration, max_cps, min_gap)
 
 
 # --------------------------------------------------------------------------

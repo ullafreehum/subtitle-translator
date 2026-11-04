@@ -11,6 +11,14 @@ STRINGS: dict[str, dict[str, str]] = {
     "menu_add_videos": {"tr": "Video ekle…", "en": "Add videos…"},
     "menu_add_folder": {"tr": "Klasör ekle…", "en": "Add folder…"},
     "menu_open_subtitles": {"tr": "Altyazı dosyası aç…", "en": "Open subtitles…"},
+    "menu_make_transcript": {
+        "tr": "Altyazıdan metin dökümü oluştur…",
+        "en": "Make a transcript from subtitles…",
+    },
+    "dlg_choose_srt": {
+        "tr": "Metin dökümü oluşturulacak altyazı dosyasını seçin",
+        "en": "Choose the subtitles to make a transcript from",
+    },
     "menu_exit": {"tr": "Çıkış", "en": "Exit"},
     "menu_settings": {"tr": "Ayarlar", "en": "Settings"},
     "menu_language": {"tr": "Dil", "en": "Language"},
@@ -81,6 +89,20 @@ STRINGS: dict[str, dict[str, str]] = {
     "nothing_processed": {"tr": "hiçbir video işlenmedi", "en": "nothing processed"},
     "result_one_video": {"tr": "1 video", "en": "1 video"},
     "result_n_videos": {"tr": "{n} video", "en": "{n} videos"},
+    "result_transcripts": {"tr": "metin dökümü: {formats}", "en": "transcript: {formats}"},
+    "fmt_docx": {"tr": "Word", "en": "Word"},
+    "fmt_txt": {"tr": "Metin", "en": "Text"},
+    "fmt_md": {"tr": "Markdown", "en": "Markdown"},
+    # time left (status line, Status column)
+    "status_working_eta": {"tr": "Çalışıyor %{pct} · {eta}", "en": "Working {pct}% · {eta}"},
+    "eta_left": {"tr": "yaklaşık {time} kaldı", "en": "about {time} left"},
+    "eta_less_minute": {"tr": "1 dakikadan az kaldı", "en": "less than a minute left"},
+    "eta_short": {"tr": "~{time}", "en": "~{time}"},
+    "eta_short_less": {"tr": "<1 dk", "en": "<1 min"},
+    "eta_min": {"tr": "{n} dk", "en": "{n} min"},
+    "eta_hours": {"tr": "{h} sa", "en": "{h} h"},
+    "eta_hours_min": {"tr": "{h} sa {m} dk", "en": "{h} h {m} min"},
+    "eta_batch": {"tr": "Tüm videolar: {eta}", "en": "All videos: {eta}"},
 
     # ------------------------------------------------------------ settings
     "frame_settings": {"tr": "Ayarlar", "en": "Settings"},
@@ -93,9 +115,31 @@ STRINGS: dict[str, dict[str, str]] = {
         "tr": "Çevrimdışı – NLLB (en iyi, gizli, sınırsız)",
         "en": "Offline – NLLB (best, private, no limits)",
     },
+    "translator_nllb_large": {
+        "tr": "Çevrimdışı – NLLB büyük model (en iyi kalite, daha yavaş)",
+        "en": "Offline – NLLB large model (best quality, slower)",
+    },
     "translator_online": {
         "tr": "Çevrimiçi – Google Translate",
         "en": "Online – Google Translate",
+    },
+    # options under the settings ("Advanced" is folded away until opened)
+    "check_clean_audio": {
+        "tr": "Konuşmayı temizle (yankılı/gürültülü salonlar için)",
+        "en": "Clean up the speech (for echoing/noisy halls)",
+    },
+    "hint_clean_audio": {"tr": "işlem biraz uzar", "en": "takes a little longer"},
+    "label_export": {"tr": "Metin dökümünü de kaydet:", "en": "Also save a transcript:"},
+    "check_export_docx": {"tr": "Word", "en": "Word"},
+    "check_export_txt": {"tr": "Metin", "en": "Text"},
+    "btn_advanced": {"tr": "Gelişmiş", "en": "Advanced"},
+    "check_retime": {
+        "tr": "Çevirileri tam cümle olarak zamanla",
+        "en": "Time translations as whole sentences",
+    },
+    "hint_retime": {
+        "tr": "(kapalıysa çeviriler orijinal altyazıların zamanlarını kullanır)",
+        "en": "(off: translations keep the timing of the original subtitles)",
     },
     "label_output": {"tr": "Çıktı klasörü:", "en": "Output folder:"},
     "btn_browse": {"tr": "Gözat…", "en": "Browse…"},
@@ -124,6 +168,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "btn_cancel": {"tr": "İptal", "en": "Cancel"},
     "btn_edit_glossary": {"tr": "Sözlüğü düzenle…", "en": "Edit glossary…"},
     "btn_open_output": {"tr": "Çıktı klasörünü aç", "en": "Open output folder"},
+    "check_shutdown": {"tr": "İş bitince bilgisayarı kapat", "en": "Shut down the PC when finished"},
     "status_ready": {"tr": "Hazır", "en": "Ready"},
     "status_starting": {"tr": "Başlıyor…", "en": "Starting…"},
     "status_cancelling": {"tr": "İptal ediliyor…", "en": "Cancelling…"},
@@ -156,6 +201,10 @@ STRINGS: dict[str, dict[str, str]] = {
     },
     "phase_load_nllb": {"tr": "Çeviri modeli yükleniyor", "en": "Loading the translation model"},
     "phase_burn": {"tr": "Altyazılı video hazırlanıyor", "en": "Making the video with subtitles"},
+    "phase_clean_audio": {
+        "tr": "Videonun sesi okunup konuşma temizleniyor",
+        "en": "Reading the sound and cleaning up the speech",
+    },
 
     # ------------------------------------------------------------ log lines
     "log_engine_failed": {
@@ -195,6 +244,18 @@ STRINGS: dict[str, dict[str, str]] = {
               "burn the video.",
     },
     "log_burned": {"tr": "Altyazılı video kaydedildi: {path}", "en": "Video with subtitles saved: {path}"},
+    "log_transcript": {"tr": "  Metin dökümü ({lang}): {path}", "en": "  Transcript ({lang}): {path}"},
+    "log_transcript_saved": {"tr": "Metin dökümü kaydedildi: {path}", "en": "Transcript saved: {path}"},
+    "log_option_unsupported": {
+        "tr": "Not: işlem motorunun bu sürümü şu seçenekleri desteklemiyor, yok sayıldı: {options}",
+        "en": "Note: this version of the engine does not support these options, ignored: {options}",
+    },
+    "log_saved_log": {"tr": "Kayıt dosyası: {path}", "en": "Log saved: {path}"},
+    "log_shutdown": {"tr": "Bilgisayar kapatılıyor…", "en": "Shutting down the PC…"},
+    "log_shutdown_cancelled": {
+        "tr": "Bilgisayarın kapatılması iptal edildi.",
+        "en": "Shutting down the PC was cancelled.",
+    },
 
     # ------------------------------------------------------------ popups
     "engine_missing": {
@@ -256,6 +317,16 @@ STRINGS: dict[str, dict[str, str]] = {
               "Tekrar denemek için Başlat'a basın. Ayrıntılar alttaki kayıt alanında.",
         "en": "{n} video(s) could not be processed:\n\n{lines}\n\n"
               "Press Start to try them again. Details are in the log.",
+    },
+    "shutdown_title": {"tr": "Bilgisayar kapatılacak", "en": "The PC will shut down"},
+    "shutdown_text": {
+        "tr": "İş bitti: {summary}.\n\nBilgisayar {n} saniye içinde kapatılacak.",
+        "en": "Finished: {summary}.\n\nThe PC will shut down in {n} seconds.",
+    },
+    "shutdown_now": {"tr": "Şimdi kapat", "en": "Shut down now"},
+    "shutdown_failed": {
+        "tr": "Bilgisayar kapatılamadı:\n{error}",
+        "en": "Could not shut down the PC:\n{error}",
     },
     "quit_running": {
         "tr": "Videolar hâlâ işleniyor.\nDurdurup çıkılsın mı?",

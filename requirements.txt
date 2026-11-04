@@ -18,6 +18,9 @@ deep-translator
 # Drag & drop of video files onto the window.
 tkinterdnd2
 
+# Transcript export to Word (.docx).
+python-docx
+
 # NVIDIA CUDA libraries for GPU speech recognition (no separate CUDA install needed).
 # Without an NVIDIA GPU these are simply unused and the app runs on the CPU.
 nvidia-cublas-cu12

@@ -61,6 +61,10 @@ SAMPLES: list[tuple[str, str]] = [
     ("This video has no sound track, so there is no speech to subtitle.",
      "Bu videoda ses yok; altyazıya dökülecek bir konuşma bulunmuyor."),
     ("Extracting audio with ffmpeg...", "Videonun sesi alınıyor (ffmpeg)..."),
+    ("Extracting audio with ffmpeg (with noise and echo reduction)...",
+     "Videonun sesi alınıyor (ffmpeg, gürültü ve yankı azaltılarak)..."),
+    ("Audio length: 1:23:45.", "Ses süresi: 1:23:45."),
+    ("Audio length: 0:35.", "Ses süresi: 0:35."),
     ("Could not read the sound of this video (ffmpeg failed).",
      "Bu videonun sesi okunamadı (ffmpeg hata verdi)."),
     ("Downloading the speech recognition model 'tiny' (75 MB, only once). This can take several minutes...",
@@ -122,6 +126,23 @@ SAMPLES: list[tuple[str, str]] = [
      "Bu videoda konuşma bulunamadı (yalnızca sessizlik, müzik ya da gürültü olabilir)."),
     ("Transcription finished: 23 subtitles. Saved lecture.en.srt",
      "Konuşma tanıma bitti: 23 altyazı. Kaydedildi: lecture.en.srt"),
+    ("Freed the speech recognition model from the GPU memory (room for the large translation model).",
+     "Konuşma tanıma modeli ekran kartı (GPU) belleğinden çıkarıldı (büyük çeviri modeline yer açmak için)."),
+    ("Freed the speech recognition model from memory.", "Konuşma tanıma modeli bellekten çıkarıldı."),
+    ("Continuing from 1:12:30 (previous run was interrupted).",
+     "1:12:30 anından devam ediliyor (önceki çalışma yarıda kalmıştı)."),
+    ("Speech recognition was already finished by the previous (interrupted) run; using its result.",
+     "Konuşma tanıma, yarıda kalan önceki çalışmada zaten bitmişti; onun sonucu kullanılıyor."),
+    ("Could not save the progress of speech recognition (Access is denied); an interrupted run would "
+     "start again from the beginning.",
+     "Konuşma tanımanın ilerlemesi kaydedilemiyor (Access is denied); yarıda kalırsa baştan başlanacak."),
+    ("Saved talk (2).tr.transcript.docx", "Kaydedildi: talk (2).tr.transcript.docx"),
+    ("Saved talk.en.transcript.md", "Kaydedildi: talk.en.transcript.md"),
+    ("Could not save the transcript talk (2).tr.transcript.docx ([Errno 13] Permission denied: 'x (1).part').",
+     "Metin dökümü kaydedilemedi: talk (2).tr.transcript.docx ([Errno 13] Permission denied: 'x (1).part')."),
+    ("Unknown transcript format: pdf", "Bilinmeyen metin dökümü biçimi: pdf"),
+    ("Word export needs python-docx (run setup.bat again).",
+     "Word dosyası için python-docx gerekiyor (setup.bat dosyasını yeniden çalıştırın)."),
     (r"Saved subtitled video: C:\Videos\talk (2).tr.subtitled.mp4",
      r"Altyazılı video kaydedildi: C:\Videos\talk (2).tr.subtitled.mp4"),
     ("Saved talk (2).tr.srt", "Kaydedildi: talk (2).tr.srt"),
@@ -330,7 +351,7 @@ def test_real_run(video: Path, out: Path) -> None:
     tr_srt = run_dir / f"{copy.stem}.tr.srt"
     tr_srt.write_text(tr_srt.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     engine.process_video(str(copy), ["tr"], source_lang="en", model_size="tiny", translator="nllb",
-                         output_dir=str(run_dir), log=log)
+                         output_dir=str(run_dir), log=log, clean_audio=True, export_formats=("docx", "txt"))
     english = [x for x in lines if i18n.engine_message(x) == x]
     print(f"  {len(lines)} log lines, {len(lines) - len(english)} translated, {len(english)} still English")
     for x in lines:

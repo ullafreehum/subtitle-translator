@@ -3,7 +3,11 @@
 translate_texts() takes one text per subtitle cue and returns one translation
 per cue. Cues often end mid-sentence, which translates badly, so consecutive
 cues are joined into sentences, translated, and split back over the cues in
-proportion to their original length.
+proportion to their original length (or, with return_groups=True, returned as
+whole sentences for the caller to time as new subtitles).
+
+Offline models: NLLB-200 distilled 1.3B (downloaded on first use) and, only where
+it is installed, NLLB-200 3.3B ("nllb_large", see available_translators()).
 
 Glossary terms are enforced by substituting them in the source text before
 translating (keep terms as written, forced terms by their translation), then
@@ -31,6 +35,8 @@ if TYPE_CHECKING:
 # --------------------------------------------------------------------------
 
 # Display name -> translator id accepted by translate_texts(translator=...).
+# The translators every copy of the app has; available_translators() adds the
+# large NLLB model where it is installed.
 TRANSLATORS: dict[str, str] = {
     "Offline – NLLB (best, private, no limits)": "nllb",
     "Online – Google Translate": "online",
@@ -39,6 +45,12 @@ DEFAULT_TRANSLATOR = "nllb"
 
 NLLB_REPO = "OpenNMT/nllb-200-distilled-1.3B-ct2-int8"
 NLLB_DIR = Path(__file__).resolve().parent / "models" / "nllb-200-distilled-1.3B"
+
+# NLLB-200 3.3B: better quality, about 4-5x slower (a 4 GB GPU holds it only partly); never downloaded by the app
+# (installed only on the owner's PC with download_nllb_large(); CC-BY-NC licence).
+NLLB_LARGE_REPO = "OpenNMT/nllb-200-3.3B-ct2-int8"
+NLLB_LARGE_DIR = Path(__file__).resolve().parent / "models" / "nllb-200-3.3B"
+NLLB_LARGE_NAME = "Offline – NLLB large model (best quality, slower)"
 
 
 class Cancelled(Exception):
@@ -80,6 +92,7 @@ MAX_CHARS_PER_REQUEST = 4500   # Google
 MYMEMORY_MAX_CHARS = 450       # MyMemory accepts ~500 characters per request
 NLLB_BATCH = 64                # sentences per GPU batch and progress/cancel step
 NLLB_CPU_BATCH = 8             # the same on the CPU
+NLLB_LARGE_BATCH = 16          # the large model on the GPU (4 GB card: little memory left)
 
 _NO_SPACE_LANGS = {"zh", "ja", "th", "yue", "lo", "km", "my"}
 _APOSTROPHE_LANGS = {"tr", "az"}  # proper nouns take suffixes after an apostrophe
@@ -515,8 +528,68 @@ def _online_translate(texts: list[str], source: str | None, target: str,
 # --------------------------------------------------------------------------
 
 _nllb_lock = threading.Lock()
-_nllb: dict = {}            # "tokenizer", "translator", "device" once loaded
-_nllb_cpu_only = False      # set after a GPU failure
+_nllb: dict[str, dict] = {}  # model id -> {"tokenizer", "translator", "device"} once loaded
+_nllb_cpu_only = False       # force the CPU for every model (tests: --cpu)
+_gpu_failed: set[str] = set()  # models that failed on the GPU; free_gpu_models() lets them retry
+
+# Model id -> where it lives and how to run it.
+_NLLB_MODELS = {
+    "nllb": {"repo": NLLB_REPO, "dir": NLLB_DIR, "size": "about 1.3 GB", "label": "NLLB",
+             "gpu_batch": NLLB_BATCH},
+    "nllb_large": {"repo": NLLB_LARGE_REPO, "dir": NLLB_LARGE_DIR, "size": "about 3.3 GB",
+                   "label": "NLLB large", "gpu_batch": NLLB_LARGE_BATCH},
+}
+_TRANSLATOR_IDS = {*TRANSLATORS.values(), "nllb_large"}   # every id translate_texts() accepts
+_MODEL_FILES = ("model.bin", "config.json", "shared_vocabulary.json", "tokenizer.json")
+
+
+def _model_complete(path: Path) -> bool:
+    """All model files there (the downloader writes model.bin under its final name only when done)."""
+    return all((path / name).is_file() and (path / name).stat().st_size > 0 for name in _MODEL_FILES)
+
+
+def available_translators() -> dict[str, str]:
+    """TRANSLATORS plus the large NLLB model when it is installed (display name -> id)."""
+    names: dict[str, str] = {}
+    for name, tid in TRANSLATORS.items():
+        names[name] = tid
+        if tid == "nllb" and _model_complete(NLLB_LARGE_DIR):
+            names[NLLB_LARGE_NAME] = "nllb_large"
+    return names
+
+
+def free_gpu_models() -> None:
+    """Release the cached NLLB translators (GPU and CPU memory); the next translation loads
+    its model again and may try the GPU again. engine.py frees Whisper the same way
+    before the large model, which only fits on a 4 GB card alone."""
+    import gc
+
+    with _nllb_lock:
+        for m in _nllb.values():
+            try:
+                m["translator"].unload_model()  # frees the memory now, not at garbage collection
+            except Exception:  # noqa: BLE001
+                pass
+        _nllb.clear()
+        _gpu_failed.clear()
+    gc.collect()
+
+
+def download_nllb_large(log: Log = print) -> Path:
+    """Download the large NLLB model into models/nllb-200-3.3B (called by hand, once;
+    the app never downloads it). Returns the model folder."""
+    if _model_complete(NLLB_LARGE_DIR):
+        log(f"The large translation model is already installed in {NLLB_LARGE_DIR}.")
+        return NLLB_LARGE_DIR
+    from huggingface_hub import snapshot_download
+
+    log("Downloading the large offline translation model (about 3.3 GB)...")
+    with download_status("the large translation model", "about 3.3 GB", log):
+        snapshot_download(repo_id=NLLB_LARGE_REPO, local_dir=str(NLLB_LARGE_DIR))
+    if not _model_complete(NLLB_LARGE_DIR):
+        raise TranslationError(f"The download of {NLLB_LARGE_REPO} is incomplete.")
+    log(f"Large offline translation model downloaded into {NLLB_LARGE_DIR}.")
+    return NLLB_LARGE_DIR
 
 
 @contextmanager
@@ -546,9 +619,14 @@ def download_status(what: str, size: str, log: Log, every: float = 30.0):
         watcher.join()
 
 
-def _ensure_nllb_model(log: Log) -> Path:
-    """Download the NLLB model into models/ the first time."""
-    needed = ("model.bin", "config.json", "shared_vocabulary.json", "tokenizer.json")
+def _ensure_nllb_model(log: Log, model: str = "nllb") -> Path:
+    """Download the NLLB model into models/ the first time (the large model is never downloaded here)."""
+    if model != "nllb":
+        path = _NLLB_MODELS[model]["dir"]
+        if not _model_complete(path):
+            raise TranslationError(f"The large offline translation model is not installed ({path}).")
+        return path
+    needed = _MODEL_FILES
     if all((NLLB_DIR / name).is_file() for name in needed):   # all there: an earlier download finished
         return NLLB_DIR
     from huggingface_hub import snapshot_download
@@ -566,57 +644,75 @@ def _ensure_nllb_model(log: Log) -> Path:
     return NLLB_DIR
 
 
-def _load_nllb(log: Log) -> dict:
-    """Load (once) the NLLB tokenizer and translator, on the GPU if possible."""
+def _release(model: str) -> None:
+    """Drop one cached translator and free its memory now (caller holds _nllb_lock)."""
+    m = _nllb.pop(model, None)
+    if m is not None:
+        try:
+            m["translator"].unload_model()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _load_nllb(log: Log, model: str = "nllb") -> dict:
+    """Load (once) an NLLB tokenizer and translator, on the GPU if possible."""
     with _nllb_lock:
-        if _nllb:
-            return _nllb
+        if model in _nllb:
+            return _nllb[model]
         import ctranslate2
         import tokenizers
 
         from cuda_setup import cuda_usable
 
-        path = _ensure_nllb_model(log)
+        spec = _NLLB_MODELS[model]
+        label = spec["label"]
+        path = _ensure_nllb_model(log, model)
         tokenizer = tokenizers.Tokenizer.from_file(str(path / "tokenizer.json"))
         translator = None
-        if not _nllb_cpu_only and cuda_usable(log):
+        if not _nllb_cpu_only and model not in _gpu_failed and cuda_usable(log):
+            # Only one NLLB model on the GPU at a time (both do not fit on a 4 GB card).
+            for other in [m for m, v in _nllb.items() if v["device"] == "cuda"]:
+                _release(other)
             try:
-                log("Loading offline translation model (NLLB) on GPU...")
+                log(f"Loading offline translation model ({label}) on GPU...")
                 translator = ctranslate2.Translator(str(path), device="cuda", compute_type="int8_float16")
             except Exception as e:  # noqa: BLE001
-                log(f"Could not load NLLB on GPU ({_one_line(e)}). Using CPU.")
+                _gpu_failed.add(model)
+                hint = " (not enough GPU memory?)" if model == "nllb_large" else ""
+                log(f"Could not load {label} on GPU{hint} ({_one_line(e)}). Using CPU"
+                    + (", which is much slower." if model == "nllb_large" else "."))
         if translator is None:
-            log("Loading offline translation model (NLLB) on CPU...")
+            log(f"Loading offline translation model ({label}) on CPU...")
             translator = ctranslate2.Translator(str(path), device="cpu", compute_type="int8")
-        _nllb.update(tokenizer=tokenizer, translator=translator, device=translator.device)
-        return _nllb
+        _nllb[model] = {"tokenizer": tokenizer, "translator": translator, "device": translator.device}
+        return _nllb[model]
 
 
-def _nllb_batch(sentences: list[str], src: str, tgt: str, log: Log) -> list[str]:
+def _nllb_batch(sentences: list[str], src: str, tgt: str, log: Log, model: str = "nllb") -> list[str]:
     """Translate a list of single sentences (FLORES codes); falls back to CPU on GPU errors."""
-    global _nllb_cpu_only
-    model = _load_nllb(log)
-    tok = model["tokenizer"]
+    loaded = _load_nllb(log, model)
+    tok = loaded["tokenizer"]
     tokens = [[src] + tok.encode(s, add_special_tokens=False).tokens + ["</s>"] for s in sentences]
+    batch = _NLLB_MODELS[model]["gpu_batch"] if loaded["device"] == "cuda" else NLLB_BATCH
     try:
-        results = model["translator"].translate_batch(
-            tokens, target_prefix=[[tgt]] * len(tokens), beam_size=4, max_batch_size=NLLB_BATCH)
+        results = loaded["translator"].translate_batch(
+            tokens, target_prefix=[[tgt]] * len(tokens), beam_size=4, max_batch_size=batch)
     except Exception as e:  # noqa: BLE001
-        if model["device"] != "cuda":
+        if loaded["device"] != "cuda":
             raise
         # Typically out of GPU memory (the Whisper model may still be loaded).
         log(f"Translation on GPU failed ({_one_line(e)}). Switching to CPU.")
         with _nllb_lock:
-            _nllb.clear()
-            _nllb_cpu_only = True
-        return _nllb_batch(sentences, src, tgt, log)
+            _release(model)
+            _gpu_failed.add(model)
+        return _nllb_batch(sentences, src, tgt, log, model)
     return [_clean_output(s, tok.decode([tok.token_to_id(t) for t in r.hypotheses[0][1:]],
                                         skip_special_tokens=True))
             for s, r in zip(sentences, results)]
 
 
 def _nllb_translate(texts: list[str], source: str | None, target: str, terms: _Terms,
-                    log: Log, progress, cancel) -> list[str]:
+                    log: Log, progress, cancel, model: str = "nllb") -> list[str]:
     """Translate texts with NLLB, one sentence at a time, applying the glossary."""
     src, tgt = _FLORES.get(source or ""), _FLORES.get(target)
     if not src or not tgt:
@@ -627,7 +723,7 @@ def _nllb_translate(texts: list[str], source: str | None, target: str, terms: _T
         raise TranslationError(f"Offline translation does not support language '{target}'.\n"
                                "Use the online translator for this language.")
     try:
-        tokenizer = _load_nllb(log)["tokenizer"]
+        tokenizer = _load_nllb(log, model)["tokenizer"]
     except TranslationError:
         raise
     except Exception as e:  # noqa: BLE001
@@ -649,14 +745,15 @@ def _nllb_translate(texts: list[str], source: str | None, target: str, terms: _T
 
     # Big batches are fastest on the GPU; on the CPU they gain little, and smaller ones
     # keep the progress bar moving and cancel quick.
-    step = NLLB_BATCH if _nllb.get("device") == "cuda" else NLLB_CPU_BATCH
+    on_gpu = _nllb.get(model, {}).get("device") == "cuda"
+    step = _NLLB_MODELS[model]["gpu_batch"] if on_gpu else NLLB_CPU_BATCH
 
     def run(batch_sentences: list[str], share: float, start_at: float) -> list[str]:
         done: list[str] = []
         for start in range(0, len(batch_sentences), step):
             _check_cancel(cancel)
             try:
-                done += _nllb_batch(batch_sentences[start:start + step], src, tgt, log)
+                done += _nllb_batch(batch_sentences[start:start + step], src, tgt, log, model)
             except Exception as e:  # noqa: BLE001
                 raise TranslationError(f"Offline translation failed: {e}") from e
             progress(start_at + share * len(done) / max(1, len(batch_sentences)))
@@ -682,7 +779,7 @@ def _nllb_translate(texts: list[str], source: str | None, target: str, terms: _T
         _check_cancel(cancel)
         protected = [terms.protect(sentences[k]) for k in retry]
         try:
-            second = _nllb_batch([p for p, _ in protected], src, tgt, log)
+            second = _nllb_batch([p for p, _ in protected], src, tgt, log, model)
         except Exception as e:  # noqa: BLE001
             raise TranslationError(f"Offline translation failed: {e}") from e
         for k, (_, values), o in zip(retry, protected, second):
@@ -725,22 +822,34 @@ def translate_texts(texts: list[str], source: str, target: str,
                     glossary: Glossary | None = None,
                     log: Log = print,
                     progress: Callable[[float], None] = lambda p: None,
-                    cancel: threading.Event | None = None) -> list[str]:
+                    cancel: threading.Event | None = None,
+                    return_groups: bool = False) -> list[str] | list[tuple[list[int], str]]:
     """Translate one text per subtitle cue; returns one translation per cue.
 
-    translator: "nllb" (offline) or "online" (Google -> MyMemory -> NLLB).
+    translator: "nllb" (offline), "nllb_large" (offline, where installed: see
+    available_translators()) or "online" (Google -> MyMemory -> NLLB).
+    return_groups: instead return [(cue indices, translation of the whole sentence group)]
+    in cue order, for re-timing the translation as new subtitles; empty cues are in no group.
     Raises Cancelled when `cancel` is set, TranslationError if every translator failed.
     """
-    if translator not in TRANSLATORS.values():
+    if translator not in _TRANSLATOR_IDS:
         raise ValueError(f"Unknown translator: {translator!r}")
+    if translator == "nllb_large" and not _model_complete(NLLB_LARGE_DIR):
+        log(f"The large offline translation model is not installed ({NLLB_LARGE_DIR}). "
+            "Using the standard offline model (NLLB).")
+        translator = "nllb"
     source, target = _base_code(source), _base_code(target)
     if not target:
         raise ValueError("A target language is required.")
     terms = _Terms(glossary, source, target)
     if not texts:
         return []
+    sep = "" if target in _NO_SPACE_LANGS else " "
     if source == target:
         progress(1.0)
+        if return_groups:
+            return [(g, terms.finish(sep.join(" ".join(texts[i].split()) for i in g)))
+                    for g in _sentence_groups(texts)]
         return [terms.finish(t) for t in texts]
 
     groups = _sentence_groups(texts)
@@ -753,7 +862,8 @@ def translate_texts(texts: list[str], source: str, target: str,
     log(f"Translating {len(texts)} subtitles ({len(todo_texts)} sentences), {source} -> {target}.")
 
     _check_cancel(cancel)
-    used_nllb = translator == "nllb"
+    model = "nllb_large" if translator == "nllb_large" else "nllb"   # also the online fallback
+    used_nllb = translator != "online"
     if translator == "online":
         try:
             translated = _online_translate(todo_texts, source, target, log, progress, cancel)
@@ -765,7 +875,7 @@ def translate_texts(texts: list[str], source: str, target: str,
             translated = _nllb_translate(todo_raw, source, target, terms, log, progress, cancel)
             used_nllb = True
     else:
-        translated = _nllb_translate(todo_raw, source, target, terms, log, progress, cancel)
+        translated = _nllb_translate(todo_raw, source, target, terms, log, progress, cancel, model)
 
     by_group = dict.fromkeys(range(len(groups)), "")
     for k, t in zip(todo, translated):
@@ -782,8 +892,18 @@ def translate_texts(texts: list[str], source: str, target: str,
                 "(part of the translation was missing).")
             cues = [i for k in dropped for i in groups[k]]
             again = _nllb_translate([" ".join(texts[i].split()) for i in cues],
-                                    source, target, terms, log, lambda p: None, cancel)
+                                    source, target, terms, log, lambda p: None, cancel, model)
             per_cue = {i: terms.finish(t) for i, t in zip(cues, again)}
+
+    if return_groups:
+        out: list[tuple[list[int], str]] = []
+        for k, g in enumerate(groups):
+            if all(per_cue.get(i) for i in g):     # re-translated cue by cue: one group per cue
+                out += [([i], per_cue[i]) for i in g]
+            elif by_group[k] or raw[k]:
+                out.append((list(g), by_group[k] or raw[k]))   # untranslated: keep the source
+        progress(1.0)
+        return out
 
     no_spaces = target in _NO_SPACE_LANGS
     result = list(texts)

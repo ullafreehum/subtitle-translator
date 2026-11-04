@@ -186,6 +186,50 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "Cannot open folder:\n{error}",
     },
 
+    # ---------------------------------------------------------------- transcript export
+    # (the dialog is also opened from the main window: File > Make a transcript…)
+    "ed_btn_transcript": {
+        "tr": "Metin dökümü olarak dışa aktar…",
+        "en": "Export as transcript…",
+    },
+    "ed_transcript_title": {"tr": "Metin dökümü olarak dışa aktar", "en": "Export as transcript"},
+    "ed_transcript_from": {"tr": "Altyazı dosyası: {name}", "en": "Subtitles: {name}"},
+    "ed_transcript_format": {"tr": "Biçim:", "en": "Format:"},
+    "ed_transcript_docx": {"tr": "Word belgesi (.docx)", "en": "Word document (.docx)"},
+    "ed_transcript_txt": {"tr": "Düz metin (.txt)", "en": "Plain text (.txt)"},
+    "ed_transcript_timestamps": {
+        "tr": "Zaman damgalarını ekle, ör. [00:01:23]",
+        "en": "Include timestamps, e.g. [00:01:23]",
+    },
+    "ed_transcript_saved_first": {
+        "tr": "Kaydedilmemiş değişiklikler önce kaydedilir.",
+        "en": "Unsaved changes are saved first.",
+    },
+    "ed_transcript_save": {"tr": "Kaydet…", "en": "Save…"},
+    "ed_transcript_save_as": {"tr": "Metin dökümünü kaydet", "en": "Save the transcript"},
+    "ed_docx_files": {"tr": "Word belgeleri", "en": "Word documents"},
+    "ed_txt_files": {"tr": "Metin dosyaları", "en": "Text files"},
+    "ed_transcript_done_status": {
+        "tr": "Metin dökümü kaydedildi: {name}",
+        "en": "Transcript saved: {name}",
+    },
+    "ed_transcript_done": {
+        "tr": "Metin dökümü kaydedildi:\n{path}\n\nŞimdi açılsın mı?",
+        "en": "Transcript saved:\n{path}\n\nOpen it now?",
+    },
+    "ed_transcript_failed": {
+        "tr": "Metin dökümü oluşturulamadı.\n\n{reason}",
+        "en": "The transcript could not be created.\n\n{reason}",
+    },
+    "ed_transcript_missing": {
+        "tr": "Metin dökümü bölümü (transcript.py) yüklenemedi: {error}",
+        "en": "The transcript module (transcript.py) could not be loaded: {error}",
+    },
+    "ed_file_open_failed": {
+        "tr": "Dosya açılamadı:\n{error}",
+        "en": "Cannot open the file:\n{error}",
+    },
+
     # ---------------------------------------------------------------- burn options
     # (also used in the main window, under "Video with subtitles")
     "ed_burn_position": {"tr": "Konum:", "en": "Position:"},

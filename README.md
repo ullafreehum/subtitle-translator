@@ -17,7 +17,9 @@
 - 🌍 **Çevirir:** Türkçe ↔ İngilizce ve 30'dan fazla dil. Çevrimdışı çalışır; videolarınız bilgisayarınızdan çıkmaz.
 - ✍️ **Gözden geçirtir:** Her altyazıyı videodaki görüntüyle birlikte görür, düzeltir, sesini dinlersiniz.
 - 🎬 **Videoya gömer:** Altta ya da üstte, istediğiniz boyutta, isterseniz arka plan kutusuyla.
-- 📂 **Toplu çalışır:** Videoları ya da bütün bir klasörü sürükleyip bırakın, gerisini o halletsin.
+- 📂 **Toplu çalışır:** Videoları ya da bütün bir klasörü sürükleyip bırakın, gerisini o halletsin. Kalan süreyi gösterir, isterseniz iş bitince bilgisayarı kapatır.
+- ⏯️ **Kaldığı yerden devam eder:** Elektrik kesilir ya da program kapanırsa uzun bir kayıt baştan başlamaz.
+- 📝 **Metin dökümü çıkarır:** Konuşmanın tamamını Word ya da düz metin olarak, isterseniz zaman damgalarıyla kaydeder.
 
 ## 📚 DİLGEM Sözlüğü
 

@@ -3,6 +3,8 @@ r"""Quick checks for glossary.py and translation.py (plain python, no pytest).
     .venv\Scripts\python.exe tests\test_translation.py            # glossary + NLLB
     .venv\Scripts\python.exe tests\test_translation.py --online   # also Google/MyMemory
     .venv\Scripts\python.exe tests\test_translation.py --cpu      # force NLLB on CPU
+
+The large NLLB model (models\nllb-200-3.3B) is tested only where it is installed.
 """
 
 from __future__ import annotations
@@ -214,6 +216,79 @@ def test_cancel() -> None:
         check(True, "Cancelled raised")
 
 
+def test_groups() -> None:
+    print("\n== nllb: return_groups (whole sentences for re-timing)")
+    texts = ["We practiced Jasper with the families", "and the trainees at Dilgem.", "",
+             "Thank you.", "Joint attention is", "the first goal", "of the programme."]
+    plain = translate_texts(texts, "en", "tr", glossary=GLOSSARY, log=lambda m: None)
+    groups = translate_texts(texts, "en", "tr", glossary=GLOSSARY, log=lambda m: None, return_groups=True)
+    for idx, t in groups:
+        print(f"  {idx}: {t}")
+    check([i for idx, _ in groups for i in idx] == [0, 1, 3, 4, 5, 6], f"groups cover the non-empty cues in order: {groups}")
+    check([idx for idx, _ in groups] == translation._sentence_groups(texts), "one entry per sentence group")
+    check(all(t.strip() for _, t in groups), "every group has a translation")
+    check("JASPER" in groups[0][1] and "DİLGEM" in groups[0][1] and "katılımcı" in groups[0][1],
+          f"glossary applied to the group: {groups[0][1]}")
+    check(len(plain) == len(texts) and plain[2] == "", "return_groups=False unchanged: one text per cue")
+    same = translate_texts(["Hello", "there.", "", "Dilgem"], "en", "en", glossary=GLOSSARY,
+                           log=lambda m: None, return_groups=True)
+    check(same == [([0, 1], "Hello there."), ([3], "DİLGEM")], f"same language: {same}")
+    check(translate_texts([], "en", "tr", log=lambda m: None, return_groups=True) == [], "no texts -> []")
+    # A group whose translation lost content is translated cue by cue: one-cue groups then.
+    old = translation._dropped_content
+    translation._dropped_content = lambda src, out: list(range(len(src)))
+    try:
+        long = ["When the child is dysregulated and cannot stay with the activity any longer,",
+                "we first help with co-regulation before we go back to the goals of the session."]
+        again = translate_texts(long, "en", "tr", glossary=GLOSSARY, log=lambda m: None, return_groups=True)
+    finally:
+        translation._dropped_content = old
+    print("  ", again)
+    check([idx for idx, _ in again] == [[0], [1]] and all(t for _, t in again), f"per-cue retry gives one-cue groups: {again}")
+
+
+def test_available_translators() -> None:
+    print("\n== available translators")
+    names = translation.available_translators()
+    check(all(names.get(k) == v for k, v in translation.TRANSLATORS.items()), f"base translators offered: {names}")
+    installed = translation._model_complete(translation.NLLB_LARGE_DIR)
+    check(("nllb_large" in names.values()) == installed, f"nllb_large offered only if installed ({installed})")
+    old = translation.NLLB_LARGE_DIR
+    translation.NLLB_LARGE_DIR = ROOT / "no-such-model"
+    try:
+        check("nllb_large" not in translation.available_translators().values(), "missing model -> not offered")
+        logs: list[str] = []
+        out = translate_texts(["Thank you very much."], "en", "tr", translator="nllb_large", log=logs.append)
+        check("teşekkür" in out[0].lower() and any("not installed" in m for m in logs),
+              f"nllb_large without the model falls back to NLLB: {out}")
+    finally:
+        translation.NLLB_LARGE_DIR = old
+    try:
+        translate_texts(["Hello."], "en", "tr", translator="nope", log=lambda m: None)
+        check(False, "unknown translator raises ValueError")
+    except ValueError:
+        check(True, "unknown translator raises ValueError")
+
+
+def test_large() -> None:
+    print("\n== nllb_large (only where installed)")
+    if not translation._model_complete(translation.NLLB_LARGE_DIR):
+        print("  skipped: models/nllb-200-3.3B not installed")
+        return
+    translation.free_gpu_models()   # the large model fits on a 4 GB card only alone
+    texts = ["We practiced Jasper with the families", "and the trainees at Dilgem.",
+             "Mirror neurons are involved in imitation."]
+    out = run(texts, "en", "tr", "en->tr large", "nllb_large")
+    print("  ", out)
+    joined = " ".join(out)
+    check("JASPER" in joined and "DİLGEM" in joined and "katılımcı" in joined, "large: glossary terms")
+    groups = translate_texts(texts, "en", "tr", translator="nllb_large", glossary=GLOSSARY,
+                             log=lambda m: None, return_groups=True)
+    check(len(groups) >= 1 and all(t for _, t in groups), f"large: return_groups works: {groups}")
+    translation.free_gpu_models()
+    check(not translation._nllb, "free_gpu_models releases every cached model")
+
+
 if __name__ == "__main__":
     if "--cpu" in sys.argv:
         translation._nllb_cpu_only = True
@@ -225,6 +300,9 @@ if __name__ == "__main__":
     test_en_tr()
     test_tr_en()
     test_other_target()
+    test_groups()
+    test_available_translators()
+    test_large()
     if "--online" in sys.argv:
         test_en_tr("online")
         test_tr_en("online")

@@ -98,10 +98,25 @@ def process_video(video_path: str, target_langs: list[str], source_lang: str | N
                   burn: bool = False, burn_style: BurnStyle | None = None,
                   output_dir: str | None = None, glossary_path: str | None = None,
                   log=print, progress=lambda p: None,
-                  cancel: threading.Event | None = None) -> dict
+                  cancel: threading.Event | None = None, vtt: bool = False,
+                  retime_translation: bool = True, resume: bool = True,
+                  clean_audio: bool = False, export_formats: tuple[str, ...] = ()) -> dict
 # returns {"video": str, "detected_language": str, "original_srt": str,
-#          "translated_srts": {lang: path}, "burned_videos": {lang: path}}
-# Output names: <stem>.<lang>.srt, <stem>.<lang>.subtitled.mp4 (output_dir or video folder).
+#          "translated_srts": {lang: path}, "burned_videos": {lang: path},
+#          "transcripts": {lang: [paths]}}
+# Output names: <stem>.<lang>.srt, <stem>.<lang>.subtitled.mp4, <stem>.<lang>.transcript.docx/.txt
+# (output_dir or video folder).
+# retime_translation: translated sentences are laid out as their own readable cues
+#   (translation.translate_texts(..., return_groups=True)) instead of the original cue times.
+# resume: speech-recognition results are checkpointed while running; an interrupted video
+#   continues where it stopped on the next run.
+# translator "nllb_large" (NLLB-200 3.3B) is offered by translation.available_translators()
+#   only when models/nllb-200-3.3B is present; engine.free_speech_model() and
+#   translation.free_gpu_models() make room for it on a 4 GB GPU.
+
+### transcript.py
+export_transcript(cues, path, title, language, timestamps=True, fmt="docx"|"txt"|"md")
+export_srt_transcript(srt_path, out_path, fmt, timestamps)   # used by the editor
 
 def burn_video(video_path: str, srt_path: str, out_path: str | None = None,
                style: BurnStyle | None = None, log=print, progress=lambda p: None,

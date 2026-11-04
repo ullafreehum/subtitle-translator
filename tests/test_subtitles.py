@@ -324,8 +324,49 @@ def test_srt_io() -> None:
         check("Tom &amp; Jerry &lt;3" in v, "vtt escaping")
 
 
+def test_cues_for_texts(cues: list[Cue]) -> None:
+    """Translations laid out over their sentences' original times (engine re-timing)."""
+    print("\n== cues_for_texts (re-timed translations)")
+    # Sentence groups of the fixture cues, each "translated" into a longer text.
+    groups, cur = [], []
+    for k, c in enumerate(cues):
+        cur.append(k)
+        if flat(c.text)[-1] in ".?!":
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+    longer = {g[0]: " ".join(flat(cues[i].text) for i in g) + " Yani gerçekten öyle düşünüyorum, evet."
+              for g in groups}
+    items = [([(cues[i].start, cues[i].end) for i in g], longer[g[0]]) for g in groups]
+    out = S.cues_for_texts(items)
+    stats = check_limits(out, "retimed", allow_orphans=True)
+    print(f"  {len(cues)} original cues, {len(groups)} sentences -> {len(out)} cues; {stats}")
+    check(flat(" ".join(c.text for c in out)) == flat(" ".join(t for _, t in items)), "text preserved")
+    check(all(sum(flat(c.text) in t for _, t in items) >= 1 for c in out), "a cue never mixes two sentences")
+    check(all(b.start - a.end >= 0.08 - 1e-9 for a, b in zip(out, out[1:])), "gaps >= 80 ms (exact)")
+    check(out[0].start >= cues[0].start - 0.5 and out[-1].end <= cues[-1].end + 6.0, "within the speech")
+    for g, (_, text) in zip(groups, items):   # each sentence stays near its own time span
+        inside = [c for c in out if c.start >= cues[g[0]].start - 0.6 and c.end <= cues[g[-1]].end + 6.0]
+        check(text.split()[0] in " ".join(c.text for c in inside), f"sentence at its time: {text[:30]!r}")
+
+    # Two intervals with a long pause: the text is not shown over the pause.
+    out = S.cues_for_texts([([(0.0, 3.0), (8.0, 11.0)],
+                             "Birinci bölümde bunu söylüyoruz ve sonra bir süre susuyoruz. "
+                             "İkinci bölümde ise konuşmaya devam ediyoruz.")])
+    check_limits(out, "pause", allow_orphans=True)
+    check(not any(c.start < 7.5 < c.end for c in out), f"no cue over the pause: {out}")
+    # Overlapping / touching spans and a CJK text: still no overlaps, gaps kept.
+    out = S.cues_for_texts([([(0.0, 1.0)], "Kısa."), ([(0.95, 2.0)], "Yine kısa."),
+                            ([(2.0, 4.0)], "我们今天讨论游戏治疗的基本原则。")])
+    check(all(b.start - a.end >= 0.08 - 1e-9 for a, b in zip(out, out[1:])), f"overlapping spans: {out}")
+    check("我们今天讨论游戏治疗的基本原则。" in "".join(c.text.replace("\n", "") for c in out), "CJK kept")
+    check(S.cues_for_texts([([(1.0, 2.0)], "  "), ([], "x")]) == [], "empty texts / no times -> no cues")
+
+
 def main() -> int:
     cues = test_fixture()
+    test_cues_for_texts(cues)
     test_empty_and_missing_words()
     test_long_segment()
     test_merge_and_pauses()

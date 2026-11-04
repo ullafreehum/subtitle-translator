@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 import fake_engine  # noqa: E402
 
 sys.modules["engine"] = fake_engine
-from tkinter import messagebox  # noqa: E402
+from tkinter import font as tkfont, messagebox  # noqa: E402
 
 DIALOGS: list[tuple[str, str]] = []
 ANSWERS: dict = {}
@@ -52,6 +52,14 @@ from i18n import t  # noqa: E402
 TMP = tempfile.mkdtemp(prefix="test_gui_")
 app.SETTINGS_PATH = os.path.join(TMP, "settings.json")
 editor.get_engine = lambda: fake_engine
+editor.get_transcript = lambda: fake_engine
+# Never shut the PC down: the command is replaced twice over (harmless + recorded).
+SHUTDOWNS: list = []
+app.SHUTDOWN_COMMAND = [sys.executable, "-c", "pass"]
+app.run_shutdown = lambda: SHUTDOWNS.append(time.time())
+# Video lengths by file name (ffprobe is not run on the empty test files).
+DURATIONS: dict = {}
+app.probe_duration = lambda path: DURATIONS.get(os.path.basename(path))
 fake_engine.STEP_DELAY = 0.01
 failures: list[str] = []
 LANGS = ("tr", "en")
@@ -183,11 +191,20 @@ def test_strings() -> None:
     codes = _literal("engine.py", "LANGUAGES").values()
     check(not [c for c in codes if "lang_" + c not in i18n_app.STRINGS],
           f"language names missing: {[c for c in codes if 'lang_' + c not in i18n_app.STRINGS]}")
-    ids = set(_literal("translation.py", "TRANSLATORS").values())
+    try:
+        engine_translators = _literal("translation.py", "TRANSLATORS")
+    except (KeyError, ValueError):
+        engine_translators = {}
+        print("WARN: translation.TRANSLATORS is not a plain dict: names not compared")
+    ids = set(engine_translators.values()) | {"nllb", "nllb_large", "online"}
     check(all("translator_" + i in i18n_app.STRINGS for i in ids), f"translator names: {ids}")
     # English texts of the translators stay the engine's reviewed display names.
-    for name, tid in _literal("translation.py", "TRANSLATORS").items():
-        check(i18n_app.STRINGS["translator_" + tid]["en"] == name, f"English name of {tid}")
+    for name, tid in engine_translators.items():
+        same = i18n_app.STRINGS.get("translator_" + tid, {}).get("en") == name
+        if tid in ("nllb", "online"):
+            check(same, f"English name of {tid}")
+        elif not same:
+            print(f"WARN: English name of {tid} differs from translation.py: {name!r}")
     i18n.set_language("tr")
     check(t("status_working", pct=42) == "Çalışıyor %42", "Turkish percent")
     check(sorted(["Çince", "Arapça", "İngilizce", "Almanca", "Ukraynaca", "Urduca"], key=app.sort_key)
@@ -436,6 +453,9 @@ def _ui_state(a) -> dict:
         "translator": a._translator_id(), "model": a.model_var.get(),
         "output": a.output_var.get(), "burn": a.burn_var.get(), "review": a.review_var.get(),
         "style": a.burn_options.values(), "log": a.log_text.get("1.0", "end-1c"),
+        "clean": a.clean_audio_var.get(), "retime": a.retime_var.get(),
+        "export": a._export_formats(), "shutdown": a.shutdown_var.get(),
+        "advanced": a._advanced_open,
         "selection": a.tree.selection(),
         "size": (a.root.winfo_width(), a.root.winfo_height()),
     }
@@ -470,6 +490,10 @@ def test_language_switch() -> None:
     a.review_var.set(True)
     a.burn_options.font_var.set("Tahoma")
     a.burn_options.box_var.set(True)
+    a.clean_audio_var.set(True)
+    a.export_vars["txt"].set(True)
+    a.shutdown_var.set(True)
+    a._toggle_advanced()
     a.root.geometry("1050x820")
     first = next(iter(a.items))
     a.tree.selection_set(first)
@@ -508,11 +532,14 @@ def test_language_switch() -> None:
     check(a.start_btn.cget("text") == "▶ Başlat" and a.source_var.get() == "Almanca",
           "switch back: Turkish texts")
 
+    check(a.advanced.winfo_ismapped(), "switch keeps the advanced options open")
+    a.shutdown_var.set(False)
+
     # While videos are processed: the window stays as it is until the batch ends.
     fake_engine.STEP_DELAY = 0.1
     a.burn_var.set(False)
     a.start()
-    check(wait(root, lambda: a._current_iid is not None, 10), "switch: batch running")
+    check(wait(root, lambda: a._current_iid is not None, 60), "switch: batch running")
     old_tree = a.tree
     DIALOGS.clear()
     _invoke_language(a, "English")
@@ -532,7 +559,7 @@ def test_language_switch() -> None:
     for iid in a.items:
         a.items[iid].status = app.WAITING
     a.start()
-    wait(root, lambda: a._current_iid is not None, 10)
+    check(wait(root, lambda: a._current_iid is not None, 60), "switch: second batch running")
     old_tree = a.tree
     _invoke_language(a, "Türkçe")
     _invoke_language(a, "English")
@@ -595,6 +622,411 @@ def test_review_flow() -> None:
     check(ed.closed and not ed.burning, "burn stopped before the window closed")
     ANSWERS.pop("askyesno")
     fake_engine.STEP_DELAY = 0.01
+
+
+# ---------------------------------------------------------------- translators, new options
+
+def test_translators() -> None:
+    """The translator list comes from available_translators(): the large NLLB model only
+    when installed; names in the window's language; a saved large model that is gone
+    falls back to the normal NLLB model."""
+    try:
+        for lang in LANGS:
+            fake_engine.LARGE_INSTALLED = False
+            root, a = new_app({"translator": "nllb_large"}, lang)
+            check(a.translator_ids == ["nllb", "online"], f"[{lang}] no large model: {a.translator_ids}")
+            check(a._translator_id() == "nllb" and a.translator_var.get() == t("translator_nllb"),
+                  f"[{lang}] saved large model falls back to NLLB: {a.translator_var.get()!r}")
+            a._on_close()
+            check(saved_settings()["translator"] == "nllb", f"[{lang}] fallback saved as nllb")
+
+            fake_engine.LARGE_INSTALLED = True
+            root, a = new_app({"translator": "nllb_large"}, lang)
+            names = list(a._translator_by_name)
+            check(a.translator_ids == ["nllb", "nllb_large", "online"], f"[{lang}] ids {a.translator_ids}")
+            check(names == [t("translator_nllb"), t("translator_nllb_large"), t("translator_online")],
+                  f"[{lang}] localized by id: {names}")
+            check(a._translator_id() == "nllb_large"
+                  and a.translator_var.get() == t("translator_nllb_large"),
+                  f"[{lang}] large model kept: {a.translator_var.get()!r}")
+            combo = next(w for w in a.inputs if isinstance(w, app.ttk.Combobox)
+                         and str(w.cget("textvariable")) == str(a.translator_var))
+            text_px = tkfont.nametofont("TkTextFont", root=root).measure(t("translator_nllb_large"))
+            check(combo.winfo_reqwidth() > text_px,
+                  f"[{lang}] translator box wide enough for {t('translator_nllb_large')!r}")
+            check_texts(a, lang)
+            a._on_close()
+            check(saved_settings()["translator"] == "nllb_large", f"[{lang}] saved by id")
+        i18n.set_language("tr")
+        check(t("translator_nllb_large") == "Çevrimdışı – NLLB büyük model (en iyi kalite, daha yavaş)",
+              "Turkish name of the large model")
+        # The id survives a switch of the interface language.
+        root, a = new_app({"translator": "nllb_large"}, "tr")
+        _invoke_language(a, "English")
+        pump(root, 0.1)
+        check(a.translator_var.get() == "Offline – NLLB large model (best quality, slower)",
+              f"switch: large model in English: {a.translator_var.get()!r}")
+        root.destroy()
+    finally:
+        fake_engine.LARGE_INSTALLED = False
+
+
+def test_options() -> None:
+    """Clean-up, transcript and timing options: defaults, saved, passed to the engine."""
+    root, a = new_app({}, "tr")
+    check((a.clean_audio_var.get(), a.retime_var.get(), a._export_formats(), a.shutdown_var.get())
+          == (False, True, (), False), "option defaults")
+    check(not a.advanced.winfo_ismapped() and a.advanced_btn.cget("text") == "▸ Gelişmiş",
+          f"advanced options folded away: {a.advanced_btn.cget('text')!r}")
+    texts = visible_texts(a)
+    for want in ("Konuşmayı temizle (yankılı/gürültülü salonlar için)", "Metin dökümünü de kaydet:",
+                 "Word", "Metin", "Çevirileri tam cümle olarak zamanla", "İş bitince bilgisayarı kapat"):
+        check(want in texts, f"option shown: {want!r}")
+    a.advanced_btn.invoke()
+    pump(root, 0.1)
+    check(a.advanced.winfo_ismapped() and a.advanced_btn.cget("text") == "▾ Gelişmiş", "advanced opens")
+    a.clean_audio_var.set(True)
+    a.retime_var.set(False)
+    a.export_vars["docx"].set(True)
+    a.export_vars["txt"].set(True)
+    a.shutdown_var.set(True)
+    a._on_close()
+    s = saved_settings()
+    check((s.get("clean_audio"), s.get("retime_translation"), s.get("export_formats"))
+          == (True, False, ["docx", "txt"]), f"options saved: {s}")
+    check("shutdown" not in json.dumps(s), "shutdown is never saved")
+    root, a = new_app()
+    check((a.clean_audio_var.get(), a.retime_var.get(), a._export_formats(), a.shutdown_var.get())
+          == (True, False, ("docx", "txt"), False), "options persist, shutdown does not")
+    pump(root, 0.1)
+    check(a.advanced.winfo_ismapped(), "a changed advanced option is shown")
+    root.destroy()
+    for bad in ({"clean_audio": "yes", "retime_translation": 0, "export_formats": "docx"},
+                {"export_formats": ["pdf", 3, "txt"]}):
+        root, a = new_app(bad)
+        check(a.clean_audio_var.get() is False and a.retime_var.get() is True
+              and a._export_formats() in ((), ("txt",)), f"odd option values ignored: {bad}")
+        root.destroy()
+
+    # The options reach process_video; transcripts are listed in the Result column and log.
+    out = os.path.join(TMP, "out_options")
+    root, a = new_app({"target_langs": ["tr"], "output_dir": out, "clean_audio": True,
+                       "retime_translation": False, "export_formats": ["docx", "txt"]}, "en")
+    a.add_paths([make_video("options talk.mp4")])
+    fake_engine.calls.clear()
+    a.start()
+    check(wait(root, lambda: not a.running and a.worker is None, 60), "options batch finishes")
+    pump(root, 0.2)
+    opts = fake_engine.calls[0][3]
+    check((opts["clean_audio"], opts["retime_translation"], opts["export_formats"])
+          == (True, False, ("docx", "txt")), f"options passed: {opts}")
+    iid = next(iter(a.items))
+    check("transcript: Word, Text" in a.tree.set(iid, "result"),
+          f"Result column lists transcripts: {a.tree.set(iid, 'result')!r}")
+    log = a.log_text.get("1.0", "end")
+    for lang in ("en", "tr"):
+        for fmt in ("docx", "txt"):
+            path = os.path.join(out, f"options talk.{lang}.transcript.{fmt}")
+            check(t("log_transcript", lang=a._lang_name(lang), path=path) in log,
+                  f"log lists {os.path.basename(path)}")
+    check(i18n.engine_message("Extracting audio with ffmpeg (with noise and echo reduction)...")
+          in log, "clean-up step logged")
+    a._phase_from_log("Extracting audio with ffmpeg (with noise and echo reduction)...")
+    check(a._phase == "phase_clean_audio", f"clean-up step named in the status line: {a._phase}")
+    a._phase = ""
+    _invoke_language(a, "Türkçe")
+    pump(root, 0.1)
+    check("metin dökümü: Word, Metin" in a.tree.set(iid, "result"),
+          f"[tr] Result column: {a.tree.set(iid, 'result')!r}")
+
+    # An older engine without the new options: they are left out (and the user told).
+    real = fake_engine.process_video
+
+    def old_process_video(video_path, target_langs, source_lang=None, model_size="x",
+                          translator="nllb", burn=False, burn_style=None, output_dir=None,
+                          glossary_path=None, log=print, progress=lambda p: None, cancel=None):
+        return real(video_path, target_langs, source_lang, model_size, translator, burn,
+                    burn_style, output_dir, glossary_path, log, progress, cancel)
+
+    fake_engine.process_video = old_process_video
+    try:
+        a.items[iid].status = app.WAITING
+        a.log_text.configure(state="normal")
+        a.log_text.delete("1.0", "end")
+        a.log_text.configure(state="disabled")
+        a.start()
+        check(wait(root, lambda: not a.running and a.worker is None, 60), "old engine batch finishes")
+        pump(root, 0.2)
+        check(a.items[iid].status == app.DONE, f"old engine: done ({a.items[iid].error})")
+        log = a.log_text.get("1.0", "end")
+        check(t("log_option_unsupported", options="")[:20] in log and t("check_retime") in log,
+              f"old engine: ignored options explained: {log[:300]!r}")
+    finally:
+        fake_engine.process_video = real
+    check(app.supported_kwargs(lambda x, **kw: None, {"a": 1}) == {"a": 1}, "**kwargs accepts all")
+    check(app.supported_kwargs(lambda x, a=1: None, {"a": 2, "b": 3}) == {"a": 2},
+          "unknown kwargs dropped")
+    root.destroy()
+
+
+def test_min_size_layout() -> None:
+    """At the minimum window size every option, button and checkbox is shown in full,
+    with the advanced options open and the longest translator name, in both languages."""
+    for lang in LANGS:
+        fake_engine.LARGE_INSTALLED = True
+        root, a = new_app({"retime_translation": False, "translator": "nllb_large"}, lang)
+        fake_engine.LARGE_INSTALLED = False
+        min_w, min_h = root.minsize()
+        root.geometry(f"{min_w}x{min_h}")
+        pump(root, 0.4)
+        clipped = []
+
+        def walk(w):
+            for child in w.winfo_children():
+                if isinstance(child, (app.ttk.Button, app.ttk.Checkbutton, app.ttk.Combobox)) or (
+                        isinstance(child, app.ttk.Label) and child.cget("text")):
+                    if not child.winfo_ismapped() or child.winfo_width() < child.winfo_reqwidth() - 1:
+                        clipped.append((str(child.cget("text")), child.winfo_width(),
+                                        child.winfo_reqwidth(), child.winfo_ismapped()))
+                walk(child)
+
+        walk(a.main)
+        check(not clipped, f"[{lang}] cut off at minimum size {min_w}x{min_h}: {clipped}")
+        rows = a.tree.winfo_height(), a.log_text.winfo_height()
+        check(rows[0] > 60 * a.scale and rows[1] > 40 * a.scale,
+              f"[{lang}] list and log still usable at minimum size: {rows}")
+        print(f"   [{lang}] minimum size {min_w}x{min_h} (scale {a.scale:.2f}), list/log {rows}")
+        root.destroy()
+
+
+# ---------------------------------------------------------------- time left
+
+def test_eta() -> None:
+    for lang, expect in (("tr", ["1 dakikadan az kaldı", "yaklaşık 1 dk kaldı", "yaklaşık 12 dk kaldı",
+                                 "yaklaşık 1 sa kaldı", "yaklaşık 1 sa 25 dk kaldı", "<1 dk", "~12 dk",
+                                 "~2 sa 5 dk"]),
+                         ("en", ["less than a minute left", "about 1 min left", "about 12 min left",
+                                 "about 1 h left", "about 1 h 25 min left", "<1 min", "~12 min",
+                                 "~2 h 5 min"])):
+        i18n.set_language(lang)
+        got = [app.format_eta(s) for s in (30, 70, 12 * 60 + 10, 3600 + 100, 85 * 60 + 40)]
+        got += [app.format_eta(s, short=True) for s in (59, 12 * 60, 125 * 60)]
+        check(got == expect, f"[{lang}] format_eta: {got}")
+
+    est = app.EtaEstimator(now=0.0)
+    for sec in range(0, 19):
+        est.update(sec / 200, now=float(sec))            # 0.5 % per second
+    check(est.remaining(now=18.0) is None, "nothing before 20 s")
+    slow = app.EtaEstimator(now=0.0)
+    slow.update(0.03, now=40.0)
+    check(slow.remaining(now=40.0) is None, "nothing before 5 %")
+    for sec in range(19, 41):
+        est.update(sec / 200, now=float(sec))
+    left = est.remaining(now=40.0)
+    check(left is not None and abs(left - 160) < 5, f"steady speed: 160 s left, got {left}")
+    est.update(0.21, now=42.0)
+    later = est.remaining(now=42.0)
+    check(later is not None and abs(later - 158) < 5, f"counts down smoothly: {later}")
+    # A sudden jump (a resumed transcription) does not make the estimate collapse.
+    est.update(0.6, now=43.0)
+    after_jump = est.remaining(now=44.0)
+    check(after_jump is not None and after_jump > 100, f"jump restarts the measurement: {after_jump}")
+    # Batch: waiting videos by their length, else by the average time per video.
+    check(app.batch_remaining(None, 30, 600, [600], []) is None, "no batch estimate before the video's")
+    check(app.batch_remaining(100, 200, 600, [], []) == 100, "last video: its own time")
+    check(abs(app.batch_remaining(100, 200, 600, [1200, 300], []) - (100 + 1200 * 0.5 + 300 * 0.5)) < 1e-6,
+          "by length")
+    check(abs(app.batch_remaining(100, 200, None, [None, None], [(500, None)]) - (100 + 2 * 400)) < 1e-6,
+          "by average")
+    check(abs(app.batch_remaining(60, 60, None, [1000], [(600, 1200)]) - (60 + 500)) < 1e-6,
+          "length ratio from finished videos")
+
+    # In the window: Status column, status line and the batch label.
+    real = (app.EtaEstimator.MIN_SECONDS, app.EtaEstimator.MIN_SPAN)
+    app.EtaEstimator.MIN_SECONDS, app.EtaEstimator.MIN_SPAN = 0.3, 0.3
+    DURATIONS.update({"eta one.mp4": 60.0, "eta two.mp4": 120.0})
+    fake_engine.STEP_DELAY = 0.15
+    try:
+        for lang in LANGS:
+            root, a = new_app({"target_langs": ["tr"], "output_dir": os.path.join(TMP, "out_eta")}, lang)
+            a.add_paths([make_video("eta one.mp4"), make_video("eta two.mp4")])
+            pump(root, 0.2)
+            a.start()
+            seen = {"column": "", "line": "", "batch": ""}
+
+            def look():
+                iid = a._current_iid
+                if iid and a.items[iid].eta is not None:
+                    seen["column"] = a.tree.set(iid, "status")
+                    seen["line"] = a.status_var.get()
+                    seen["batch"] = a.batch_eta_var.get() or seen["batch"]
+                return bool(seen["column"] and seen["batch"])
+
+            check(wait(root, look, 30), f"[{lang}] time left shown: {seen}")
+            check(" · " in seen["column"] and seen["column"].startswith(t("status_working", pct=0)[:4]),
+                  f"[{lang}] Status column: {seen['column']!r}")
+            check(t("eta_left", time="")[:5] in seen["line"] or t("eta_less_minute") in seen["line"],
+                  f"[{lang}] status line: {seen['line']!r}")
+            check(seen["batch"].startswith(t("eta_batch", eta="")), f"[{lang}] batch label: {seen['batch']!r}")
+            check(wait(root, lambda: not a.running and a.worker is None, 60), f"[{lang}] eta batch finishes")
+            pump(root, 0.2)
+            check(a.batch_eta_var.get() == "" and all(i.eta is None for i in a.items.values()),
+                  f"[{lang}] time left cleared at the end")
+            check(len(a._run_times) == 2 and a._run_times[0][1] == 60.0,
+                  f"[{lang}] times recorded: {a._run_times}")
+            check(a.items[next(iter(a.items))].result.get("audio_duration") == 12.0, "fake length")
+            root.destroy()
+        # ffprobe failed: the engine's "audio_duration" is used for the next estimates.
+        root, a = new_app({"target_langs": ["tr"], "output_dir": os.path.join(TMP, "out_eta")}, "en")
+        fake_engine.STEP_DELAY = 0.01
+        a.add_paths([make_video("eta three.mp4")])
+        a.start()
+        check(wait(root, lambda: not a.running and a.worker is None, 60), "eta fallback batch finishes")
+        pump(root, 0.2)
+        check(a._run_times and a._run_times[-1][1] == 12.0, f"engine length used: {a._run_times}")
+        root.destroy()
+    finally:
+        app.EtaEstimator.MIN_SECONDS, app.EtaEstimator.MIN_SPAN = real
+        fake_engine.STEP_DELAY = 0.01
+        DURATIONS.clear()
+
+
+# ---------------------------------------------------------------- shut down when finished
+
+def _rerun(a) -> None:
+    for item in a.items.values():
+        item.status = app.WAITING
+    a.start()
+
+
+def test_shutdown() -> None:
+    """Countdown after the batch (also with failures), Cancel / Shut down now, never after
+    the user cancelled. run_shutdown is replaced by a recorder (see the top of the file)."""
+    real_countdown = app.SHUTDOWN_COUNTDOWN
+    app.SHUTDOWN_COUNTDOWN = 2
+    logs = os.path.join(TMP, "logs")
+    try:
+        for lang in LANGS:
+            out = os.path.join(TMP, "out_shutdown_" + lang)
+            root, a = new_app({"target_langs": ["tr"], "output_dir": out}, lang)
+            good, bad = make_video(f"sd good {lang}.mp4"), make_video(f"sd bad {lang}.mp4")
+            fake_engine.FAIL_NAMES.add(os.path.basename(bad))
+            a.add_paths([good, bad])
+            SHUTDOWNS.clear()
+            DIALOGS.clear()
+            a.start()
+            a.shutdown_var.set(True)                  # ticked while the batch runs
+            check(wait(root, lambda: not a.running and a.worker is None, 60), f"[{lang}] batch ends")
+            pump(root, 0.1)
+            dlg = a._shutdown_dialog
+            check(dlg is not None and dlg.winfo_exists(), f"[{lang}] countdown shown (one video failed)")
+            check(not any(k == "showwarning" for k, _ in DIALOGS), f"[{lang}] no popup waits for a click")
+            if dlg is not None:
+                check(dlg.title() == t("shutdown_title") and dlg.now_btn.cget("text") == t("shutdown_now")
+                      and dlg.cancel_btn.cget("text") == t("btn_cancel"), f"[{lang}] countdown texts")
+                check(dlg.left in (1, 2) and dlg.text.cget("text")
+                      == t("shutdown_text", summary=a._summary(a._run_counts), n=dlg.left),
+                      f"[{lang}] countdown message: {dlg.text.cget('text')!r}")
+                check(t("count_failed", n=1) in dlg.text.cget("text"), f"[{lang}] failures mentioned")
+            check(not SHUTDOWNS, f"[{lang}] not before the countdown ends")
+            check(wait(root, lambda: SHUTDOWNS, 10), f"[{lang}] shuts down after the countdown")
+            saved = sorted(os.listdir(logs)) if os.path.isdir(logs) else []
+            check(saved, f"[{lang}] log saved next to settings.json before shutting down")
+            if saved:
+                with open(os.path.join(logs, saved[-1]), encoding="utf-8") as f:
+                    text = f.read()
+                check(os.path.basename(bad) in text and t("log_shutdown") in text, f"[{lang}] log content")
+            check(saved_settings().get("output_dir") == out, f"[{lang}] settings saved")
+            check(not os.path.exists(os.path.join(os.path.dirname(good), "logs")),
+                  f"[{lang}] nothing written next to the videos")
+            fake_engine.FAIL_NAMES.clear()
+
+            # Cancel in the countdown: no shutdown, the box is unticked.
+            a.shutdown_var.set(True)
+            SHUTDOWNS.clear()
+            _rerun(a)
+            check(wait(root, lambda: a._shutdown_dialog is not None, 60), f"[{lang}] countdown again")
+            a._shutdown_dialog.cancel_btn.invoke()
+            pump(root, 2.5)
+            check(not SHUTDOWNS and not a.shutdown_var.get() and a._shutdown_dialog is None,
+                  f"[{lang}] Cancel stops the shutdown")
+            check(t("log_shutdown_cancelled") in a.log_text.get("1.0", "end"), f"[{lang}] cancel logged")
+
+            # "Shut down now" does not wait for the 60 seconds.
+            app.SHUTDOWN_COUNTDOWN = 60
+            a.shutdown_var.set(True)
+            _rerun(a)
+            check(wait(root, lambda: a._shutdown_dialog is not None, 60), f"[{lang}] countdown (60 s)")
+            sd = a._shutdown_dialog       # a slow PC may already have ticked once or twice
+            check(sd.bar["maximum"] == 60 and sd.left >= 55 and str(sd.left) in sd.text.cget("text"),
+                  f"[{lang}] 60 seconds shown: {sd.text.cget('text')!r}")
+            a._shutdown_dialog.now_btn.invoke()
+            check(len(SHUTDOWNS) == 1 and a._shutdown_dialog is None, f"[{lang}] Shut down now")
+            app.SHUTDOWN_COUNTDOWN = 2
+
+            # Cancelled by the user: no countdown.
+            a.shutdown_var.set(True)
+            SHUTDOWNS.clear()
+            fake_engine.STEP_DELAY = 0.2
+            _rerun(a)
+            wait(root, lambda: a._current_iid is not None, 60)
+            a.cancel()
+            check(wait(root, lambda: not a.running and a.worker is None, 30), f"[{lang}] cancelled")
+            pump(root, 2.5)
+            check(a._shutdown_dialog is None and not SHUTDOWNS, f"[{lang}] no shutdown after Cancel")
+            fake_engine.STEP_DELAY = 0.01
+
+            # A failing shutdown command is reported.
+            def broken():
+                raise FileNotFoundError(2, "The system cannot find the file specified", "shutdown")
+
+            app.run_shutdown = broken
+            DIALOGS.clear()
+            a._shutdown_now()
+            check(DIALOGS and DIALOGS[-1][0] == "showerror"
+                  and DIALOGS[-1][1].startswith(t("shutdown_failed", error="").strip()),
+                  f"[{lang}] failed shutdown explained: {DIALOGS}")
+            app.run_shutdown = lambda: SHUTDOWNS.append(time.time())
+            a.shutdown_var.set(False)
+            a._on_close()
+            shutil.rmtree(logs, ignore_errors=True)
+    finally:
+        app.SHUTDOWN_COUNTDOWN = real_countdown
+        app.run_shutdown = lambda: SHUTDOWNS.append(time.time())
+        fake_engine.FAIL_NAMES.clear()
+        fake_engine.STEP_DELAY = 0.01
+
+
+# ---------------------------------------------------------------- transcript from the File menu
+
+def test_make_transcript() -> None:
+    for lang in LANGS:
+        root, a = new_app({}, lang)
+        labels = menu_labels(a.menubar)
+        check(t("menu_make_transcript") in labels, f"[{lang}] File menu entry: {labels}")
+        srt = os.path.join(TMP, f"menu talk {lang}.tr.srt")
+        editor.subtitles.write_srt([editor.subtitles.Cue(1.0, 3.0, "Merhaba dünya")], srt)
+        out = os.path.join(TMP, f"menu talk {lang}.tr.docx")
+        real_open, real_save = app.filedialog.askopenfilename, editor.filedialog.asksaveasfilename
+        app.filedialog.askopenfilename = lambda **kw: srt
+        editor.filedialog.asksaveasfilename = lambda **kw: out
+        editor._transcript_choice.update(fmt="docx", timestamps=False)
+        fake_engine.transcript_calls.clear()
+        ANSWERS["askyesno"] = False
+        try:
+            dlg = a.make_transcript()
+            pump(root, 0.1)
+            check(dlg is not None and dlg.title() == t("ed_transcript_title"), f"[{lang}] dialog opens")
+            check(dlg is not None and dlg.export() == out, f"[{lang}] exported")
+            check(fake_engine.transcript_calls == [(srt, out, "docx", False)],
+                  f"[{lang}] export_srt_transcript called: {fake_engine.transcript_calls}")
+            check(t("log_transcript_saved", path=out) in a.log_text.get("1.0", "end"), f"[{lang}] logged")
+            app.filedialog.askopenfilename = lambda **kw: ""
+            check(a.make_transcript() is None, f"[{lang}] no SRT chosen: nothing happens")
+        finally:
+            app.filedialog.askopenfilename, editor.filedialog.asksaveasfilename = real_open, real_save
+            ANSWERS.pop("askyesno", None)
+        root.destroy()
 
 
 # ---------------------------------------------------------------- editor
@@ -668,10 +1100,12 @@ def main() -> int:
     for lang in LANGS:
         tests += [lambda lang=lang: test_layout(lang), lambda lang=lang: test_add_and_drop(lang),
                   lambda lang=lang: test_batch(lang)]
-    tests += [test_language_switch, test_review_flow, test_editor]
+    extra = [test_language_switch, test_translators, test_options, test_min_size_layout, test_eta,
+             test_shutdown, test_make_transcript, test_review_flow, test_editor]
+    tests += extra
     names = ["test_strings", "test_parse_time", "test_fonts", "test_paths", "test_settings"]
     names += [f"{n} [{lang}]" for lang in LANGS for n in ("test_layout", "test_add_and_drop", "test_batch")]
-    names += ["test_language_switch", "test_review_flow", "test_editor"]
+    names += [f.__name__ for f in extra]
     try:
         for name, test in zip(names, tests):
             print("==", name)

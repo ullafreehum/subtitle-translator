@@ -73,6 +73,35 @@ def get_engine():
     return engine
 
 
+def get_transcript():
+    """Import transcript.py lazily (Word export needs python-docx)."""
+    import transcript
+    return transcript
+
+
+TRANSCRIPT_FORMATS = ("docx", "txt")
+# Last choice in the export dialog (this session only).
+_transcript_choice = {"fmt": "docx", "timestamps": False}
+
+
+def write_transcript(srt_path: str, out_path: str, fmt: str, timestamps: bool) -> str:
+    """Write the transcript of an SRT as Word (.docx) or plain text (.txt).
+    Returns the file written. RuntimeError with a user message if transcript.py is missing."""
+    try:
+        module = get_transcript()
+    except Exception as exc:   # ImportError, or python-docx missing inside it
+        raise RuntimeError(t("ed_transcript_missing", error=exc)) from exc
+    result = module.export_srt_transcript(srt_path, out_path, fmt, timestamps)
+    return result if isinstance(result, str) and result else out_path
+
+
+def open_file(path: str, parent=None) -> None:
+    try:
+        os.startfile(path)
+    except OSError as exc:
+        messagebox.showerror(app_name(), t("ed_file_open_failed", error=exc), parent=parent)
+
+
 # ---------------------------------------------------------------- helpers
 
 def format_time(seconds: float) -> str:
@@ -374,6 +403,7 @@ class SubtitleEditor:
         self._burn_cancel: threading.Event | None = None
         self._last_burned: str | None = None
         self._find_dialog = None
+        self._transcript_dialog = None
 
         self.win = tk.Toplevel(parent)
         set_window_icon(self.win)
@@ -518,6 +548,10 @@ class SubtitleEditor:
         row1.pack(fill="x")
         self.burn_options = BurnOptions(row1, burn_style)
         self.burn_options.frame.pack(side="left")
+        # Here, not next to Save: the status text in the row below needs the room.
+        self.transcript_btn = ttk.Button(row1, text=t("ed_btn_transcript"),
+                                         command=self.export_transcript)
+        self.transcript_btn.pack(side="right")
         row2 = ttk.Frame(burn)
         row2.pack(fill="x", pady=(8, 0))
         self.save_btn = ttk.Button(row2, text=t("ed_btn_save"), command=self.save)
@@ -1009,6 +1043,23 @@ class SubtitleEditor:
         self.status_var.set(t("ed_saved", name=os.path.basename(self.srt_path)))
         return True
 
+    def export_transcript(self) -> None:
+        """Ask for format/timestamps and a file name, then write the transcript of the
+        saved subtitles (unsaved edits are saved first)."""
+        self._commit_details()
+        if self._transcript_dialog and self._transcript_dialog.winfo_exists():
+            self._transcript_dialog.lift()
+            return
+
+        def done(path):
+            self.status_var.set(t("ed_transcript_done_status", name=os.path.basename(path)))
+            if self._has_log:
+                self.log(t("ed_transcript_done_status", name=path))
+
+        self._transcript_dialog = TranscriptDialog(
+            self.win, self.srt_path, before_export=lambda: not self.dirty or self.save(),
+            unsaved=self.dirty, on_done=done)
+
     @property
     def burning(self) -> bool:
         return bool(self._burn_thread and self._burn_thread.is_alive())
@@ -1157,8 +1208,9 @@ class SubtitleEditor:
         """Close without prompting."""
         self.closed = True
         stop_process(self._player)
-        if self._find_dialog and self._find_dialog.winfo_exists():
-            self._find_dialog.destroy()
+        for dialog in (self._find_dialog, self._transcript_dialog):
+            if dialog and dialog.winfo_exists():
+                dialog.destroy()
         try:
             self.win.destroy()
         except tk.TclError:
@@ -1215,6 +1267,95 @@ class FindReplaceDialog(tk.Toplevel):
         total, cues = self.editor.replace_all(self.find_var.get(), self.repl_var.get(),
                                               self.case_var.get())
         self.status.configure(text=t("ed_replaced", total=total, cues=cues))
+
+
+class TranscriptDialog(tk.Toplevel):
+    """Export an SRT as a transcript: Word (.docx) or plain text (.txt), with or without
+    timestamps. Used by the editor and by the main window (File menu).
+
+    before_export() runs after the file name was chosen (the editor saves there); it
+    returns False to stop. on_done(path) is called after the file was written."""
+
+    def __init__(self, parent, srt_path: str, before_export=None, on_done=None,
+                 unsaved: bool = False):
+        super().__init__(parent)
+        self.srt_path = os.path.abspath(srt_path)
+        self.before_export = before_export
+        self.on_done = on_done
+        self.title(t("ed_transcript_title"))
+        self.transient(parent)
+        self.resizable(False, False)
+        set_window_icon(self)
+        body = ttk.Frame(self, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=t("ed_transcript_from", name=os.path.basename(self.srt_path)),
+                  font=("Segoe UI", 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+        fmt = _transcript_choice.get("fmt")
+        self.fmt_var = tk.StringVar(value=fmt if fmt in TRANSCRIPT_FORMATS else "docx")
+        self.timestamps_var = tk.BooleanVar(value=bool(_transcript_choice.get("timestamps")))
+        ttk.Label(body, text=t("ed_transcript_format")).grid(row=1, column=0, sticky="nw",
+                                                              pady=(10, 0))
+        for r, value in enumerate(TRANSCRIPT_FORMATS):
+            ttk.Radiobutton(body, text=t(f"ed_transcript_{value}"), value=value,
+                            variable=self.fmt_var).grid(row=1 + r, column=1, sticky="w",
+                                                        padx=(8, 0), pady=(10 if r == 0 else 2, 0))
+        ttk.Checkbutton(body, text=t("ed_transcript_timestamps"),
+                        variable=self.timestamps_var).grid(row=3, column=0, columnspan=2,
+                                                           sticky="w", pady=(10, 0))
+        if unsaved:
+            ttk.Label(body, text=t("ed_transcript_saved_first"), foreground="gray").grid(
+                row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        buttons = ttk.Frame(body)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        self.save_btn = ttk.Button(buttons, text=t("ed_transcript_save"), command=self.export)
+        self.save_btn.pack(side="left", padx=(0, 4))
+        ttk.Button(buttons, text=t("ed_btn_cancel"), command=self.destroy).pack(side="left")
+        self.bind("<Return>", lambda e: self.export())
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.save_btn.focus_set()
+
+    def choose_path(self, fmt: str) -> str:
+        """Ask where to save (default: next to the SRT, same name)."""
+        stem = os.path.splitext(os.path.basename(self.srt_path))[0]
+        kind = t("ed_docx_files") if fmt == "docx" else t("ed_txt_files")
+        return filedialog.asksaveasfilename(
+            parent=self, title=t("ed_transcript_save_as"),
+            initialdir=os.path.dirname(self.srt_path), initialfile=f"{stem}.{fmt}",
+            defaultextension="." + fmt, filetypes=[(kind, "*." + fmt), (t("ed_all_files"), "*.*")])
+
+    def export(self) -> str | None:
+        """Write the transcript; returns its path (None if cancelled or failed)."""
+        fmt, timestamps = self.fmt_var.get(), bool(self.timestamps_var.get())
+        _transcript_choice.update(fmt=fmt, timestamps=timestamps)
+        path = self.choose_path(fmt)
+        if not path:
+            return None
+        path = os.path.normpath(path)
+        if self.before_export and not self.before_export():
+            return None
+        try:
+            path = write_transcript(self.srt_path, path, fmt, timestamps)
+        except Exception as exc:
+            if isinstance(exc, PermissionError):
+                reason = t("ed_no_permission")
+            else:
+                reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+            messagebox.showerror(app_name(), t("ed_transcript_failed",
+                                               reason=engine_message(reason.strip())),
+                                 parent=self)
+            return None
+        parent = self.master
+        self.destroy()
+        if self.on_done:
+            self.on_done(path)
+        if messagebox.askyesno(app_name(), t("ed_transcript_done", path=path), parent=parent):
+            open_file(path, parent)
+        return path
+
+
+def export_transcript(parent, srt_path: str, on_done=None) -> TranscriptDialog:
+    """Open the transcript export dialog for an SRT file (main window: File menu)."""
+    return TranscriptDialog(parent, srt_path, on_done=on_done)
 
 
 def open_editor(parent, video_path, translated_srt, original_srt=None, burn_style=None,

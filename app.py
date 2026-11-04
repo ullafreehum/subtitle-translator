@@ -12,10 +12,13 @@ being processed the switch waits until the batch has finished.
 """
 
 import collections
+import inspect
 import json
+import math
 import os
 import queue
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -35,6 +38,10 @@ VIDEO_EXTS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v")
 # Videos this program makes (finished / being written): skipped when adding a folder.
 OUTPUT_VIDEO_SUFFIXES = (".subtitled.mp4", ".part.mp4")
 MAIN_LANGUAGES = ("tr", "en")        # listed first, before the alphabetical rest
+EXPORT_FORMATS = ("docx", "txt")     # transcript formats (process_video export_formats)
+SHUTDOWN_COMMAND = ["shutdown", "/s", "/t", "0"]
+SHUTDOWN_COUNTDOWN = 60              # seconds the user has to stop the shutdown
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # Make sure modules next to this file are importable regardless of cwd.
 if APP_DIR not in sys.path:
@@ -113,6 +120,170 @@ def lang_code(value, languages: dict) -> str | None:
         if value.casefold() == name.casefold():
             return code
     return None
+
+
+def available_translators() -> dict:
+    """Display name -> id of the translators that can be used on this PC (the large NLLB
+    model only when it is installed). Older engines only have the fixed TRANSLATORS."""
+    sources = [engine]
+    if engine is not None and not hasattr(engine, "available_translators"):
+        try:
+            import translation        # light: the heavy libraries load on first use
+            sources.append(translation)
+        except Exception:
+            pass
+    for module in sources:
+        fn = getattr(module, "available_translators", None)
+        if callable(fn):
+            try:
+                found = dict(fn() or {})
+            except Exception:
+                found = {}
+            if found:
+                return found
+    return dict(getattr(engine, "TRANSLATORS", {}) or {})
+
+
+def supported_kwargs(func, kwargs: dict) -> dict:
+    """The keyword arguments `func` accepts (an older engine may not know new options)."""
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(kwargs)
+    return {k: v for k, v in kwargs.items() if k in params}
+
+
+def probe_duration(path: str) -> float | None:
+    """Length of a video in seconds (ffprobe), None if unknown. Run in a background thread."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                              "-of", "csv=p=0", path], capture_output=True, text=True,
+                             timeout=30, creationflags=_NO_WINDOW).stdout.strip()
+        value = float(out.splitlines()[0]) if out else 0.0
+    except Exception:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def run_shutdown() -> None:
+    """Shut Windows down now (the tests replace this)."""
+    subprocess.Popen(SHUTDOWN_COMMAND, creationflags=_NO_WINDOW)
+
+
+def format_eta(seconds: float, short: bool = False) -> str:
+    """Time left in words: "yaklaşık 12 dk kaldı" / "about 12 min left";
+    short (Status column): "~12 dk" / "~12 min"."""
+    if seconds < 60:
+        return t("eta_short_less") if short else t("eta_less_minute")
+    minutes = max(1, round(seconds / 60))
+    if minutes < 60:
+        text = t("eta_min", n=minutes)
+    else:
+        minutes = round(seconds / 300) * 5         # over an hour: in 5-minute steps
+        h, m = divmod(minutes, 60)
+        text = t("eta_hours_min", h=h, m=m) if m else t("eta_hours", h=h)
+    return t("eta_short", time=text) if short else t("eta_left", time=text)
+
+
+class EtaEstimator:
+    """Time left for one video from its progress over time.
+
+    The rate is measured over the last WINDOW seconds (steps differ in speed, and the
+    first video also loads the models), and the shown value is smoothed and counts
+    down between updates, so it does not jump around. Nothing is estimated before
+    MIN_PROGRESS and MIN_SECONDS. A sudden jump of the progress (resumed work, a skipped
+    step) restarts the measurement."""
+
+    MIN_PROGRESS = 0.05
+    MIN_SECONDS = 20.0
+    WINDOW = 120.0
+    MIN_SPAN = 8.0          # seconds of measurement needed for a rate
+    JUMP = 0.08             # progress gained within 3 s that is not "normal" speed
+    SMOOTHING = 0.2         # weight of a new measurement (updated about once a second)
+
+    def __init__(self, now: float | None = None):
+        now = time.monotonic() if now is None else now
+        self.start = now
+        self.progress = 0.0
+        self.samples: collections.deque = collections.deque([(now, 0.0)])
+        self._value: float | None = None
+        self._value_time = now
+
+    def update(self, progress: float, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        last_t, last_p = self.samples[-1]
+        if progress <= last_p:
+            return
+        if progress - last_p > self.JUMP and now - last_t < 3.0:
+            self.samples.clear()
+        self.samples.append((now, progress))
+        self.progress = progress
+        while len(self.samples) > 2 and now - self.samples[1][0] > self.WINDOW:
+            self.samples.popleft()
+
+    def remaining(self, now: float | None = None) -> float | None:
+        """Seconds left (None while there is not enough to go on)."""
+        now = time.monotonic() if now is None else now
+        p = self.progress
+        if p >= 1.0:
+            return 0.0
+        if p < self.MIN_PROGRESS or now - self.start < self.MIN_SECONDS:
+            return None
+        t0, p0 = self.samples[0]
+        span, gained = now - t0, p - p0
+        raw = (1.0 - p) * span / gained if span >= self.MIN_SPAN and gained > 0.002 else None
+        if self._value is None:
+            self._value = raw
+        else:
+            counted = max(0.0, self._value - (now - self._value_time))
+            self._value = counted if raw is None else counted + self.SMOOTHING * (raw - counted)
+        self._value_time = now
+        return self._value
+
+    def elapsed(self, now: float | None = None) -> float:
+        return (time.monotonic() if now is None else now) - self.start
+
+
+def batch_remaining(current_left: float | None, current_elapsed: float,
+                    current_duration: float | None, waiting_durations: list,
+                    finished: list) -> float | None:
+    """Seconds left for the whole batch: the current video plus the waiting ones,
+    estimated by their length (seconds of work per second of video) when known,
+    otherwise by the average time per video. finished: (seconds taken, length or None)."""
+    if current_left is None:
+        return None
+    total = current_left
+    if not waiting_durations:
+        return total
+    known = [(s, d) for s, d in finished if d]
+    if current_duration:
+        known.append((current_elapsed + current_left, current_duration))
+    ratio = sum(s for s, _ in known) / sum(d for _, d in known) if known else None
+    times = [s for s, _ in finished] + [current_elapsed + current_left]
+    average = sum(times) / len(times)
+    for d in waiting_durations:
+        total += d * ratio if d and ratio else average
+    return total
+
+
+def transcript_paths(result: dict) -> list[tuple[str, str]]:
+    """(language, path) of the transcript files in a process_video result
+    ("transcripts": {lang: [paths]}; a single path is accepted too)."""
+    found = []
+    transcripts = result.get("transcripts") if isinstance(result, dict) else None
+    for lang, paths in (transcripts or {}).items() if isinstance(transcripts, dict) else ():
+        for path in [paths] if isinstance(paths, str) else (paths or []):
+            if isinstance(path, str) and path:
+                found.append((lang, path))
+    return found
+
+
+def transcript_formats(result: dict) -> list[str]:
+    """Formats ("docx", "txt") among the transcript files of a result, in a fixed order."""
+    exts = {os.path.splitext(p)[1].lower().lstrip(".") for _, p in transcript_paths(result)}
+    return [f for f in EXPORT_FORMATS + ("md",) if f in exts]   # the engine also writes .md
 
 
 def translator_id(value, translators: dict, default: str | None) -> str | None:
@@ -206,6 +377,7 @@ def friendly_error(exc: BaseException) -> str:
 
 # Engine log lines (English) that start a step -> status-bar text key meanwhile.
 PHASES = (
+    ("Extracting audio with ffmpeg (with noise", "phase_clean_audio"),   # clean_audio on
     ("Extracting audio", "phase_audio"),
     ("Downloading the speech recognition model", "phase_download_whisper"),
     ("Loading speech recognition model", "phase_load_whisper"),
@@ -271,6 +443,7 @@ class QueueItem:
     progress: float = 0.0
     error: tuple | None = None       # error_info() of a failure
     detail: str = ""                 # Languages/Result column as last shown
+    eta: float | None = None         # seconds left while working (None = not known yet)
 
 
 # ---------------------------------------------------------------- main window
@@ -308,6 +481,17 @@ class App:
         self._phase_started = 0.0
         self._phase_progress = 0.0          # item progress when the step started
         self._busy_bar = False              # progress bar animating (no measurable progress)
+        # Time left: estimator of the running video, lengths of the videos (ffprobe in a
+        # background thread), (seconds taken, length) of the videos done in this batch.
+        self._eta: EtaEstimator | None = None
+        self._eta_shown = 0.0               # when the time left was last recomputed
+        self._video_left: float | None = None
+        self._batch_left: float | None = None
+        self._durations: dict[str, float | None] = {}   # normcase(path) -> seconds
+        self._probe_queue: queue.Queue | None = None
+        self._run_times: list[tuple[float, float | None]] = []
+        self._shutdown_dialog = None
+        self._advanced_open = False
 
         self.scale = editor.ui_scale(root)
         self._base_min = (820, 640)
@@ -325,7 +509,7 @@ class App:
         self.languages: dict = dict(getattr(engine, "LANGUAGES", {}) or {})
         self.code_to_name = {code: name for name, code in self.languages.items()}  # English
         self.model_sizes = list(getattr(engine, "MODEL_SIZES", [])) or ["large-v3-turbo"]
-        self.translators: dict = dict(getattr(engine, "TRANSLATORS", {}) or {})
+        self.translators: dict = available_translators()
         self.translator_ids = list(dict.fromkeys(self.translators.values()))
 
         self._init_vars()
@@ -353,12 +537,21 @@ class App:
         self.output_var = tk.StringVar(value=_setting(s, "output_dir", str, ""))
         self.burn_var = tk.BooleanVar(value=_setting(s, "burn", bool, False))
         self.review_var = tk.BooleanVar(value=_setting(s, "review", bool, False))
+        self.clean_audio_var = tk.BooleanVar(value=_setting(s, "clean_audio", bool, False))
+        self.retime_var = tk.BooleanVar(value=_setting(s, "retime_translation", bool, True))
+        formats = _setting(s, "export_formats", list, [])
+        self.export_vars = {fmt: tk.BooleanVar(value=fmt in formats) for fmt in EXPORT_FORMATS}
+        # Not remembered: a shutdown is decided for one batch at a time.
+        self.shutdown_var = tk.BooleanVar(value=False)
+        # A changed advanced option is never hidden.
+        self._advanced_open = not self.retime_var.get()
         self.ui_lang_var = tk.StringVar(value=i18n.language())
         # Texts of these depend on the language: set by _build_widgets.
         self.source_var = tk.StringVar()
         self.translator_var = tk.StringVar()
         self.status_var = tk.StringVar()
         self.targets_var = tk.StringVar()
+        self.batch_eta_var = tk.StringVar()
 
     def _initial_state(self) -> dict:
         """Choices from settings.json as codes (older files stored English names)."""
@@ -417,6 +610,7 @@ class App:
         file_menu.add_command(label=t("menu_add_videos"), command=self.browse_videos)
         file_menu.add_command(label=t("menu_add_folder"), command=self.browse_folder)
         file_menu.add_command(label=t("menu_open_subtitles"), command=self.open_subtitles_dialog)
+        file_menu.add_command(label=t("menu_make_transcript"), command=self.make_transcript)
         file_menu.add_separator()
         file_menu.add_command(label=t("menu_exit"), command=self._on_close)
         bar.add_cascade(label=t("menu_file"), menu=file_menu)
@@ -527,7 +721,7 @@ class App:
                                 if state["translator"] in self.translator_ids
                                 else (names[0] if names else ""))
         c = ttk.Combobox(left, textvariable=self.translator_var, state="readonly",
-                         values=names, width=38)
+                         values=names, width=self._text_width(names, minimum=38))
         c.grid(row=r, column=1, sticky="w", padx=6, pady=3)
         self.inputs.append(c)
         r += 1
@@ -565,6 +759,7 @@ class App:
         ttk.Label(right, textvariable=self.targets_var, foreground="#1f5fbf").grid(
             row=2, column=0, columnspan=2, sticky="w")
         self._update_targets_label()
+        self._build_options(sf)
 
         # --- burn options
         bf = ttk.LabelFrame(main, text=t("frame_burn"), padding=8)
@@ -592,14 +787,23 @@ class App:
             side="left", padx=(12, 0))
         ttk.Button(af, text=t("btn_open_output"), command=self.open_output).pack(
             side="left", padx=6)
+        # Can be ticked while the batch runs (that is when you know it will take long).
+        ttk.Checkbutton(af, text=t("check_shutdown"), variable=self.shutdown_var).pack(
+            side="right")
         self._rows.append((af, 0))
         if ENGINE_ERROR:
             self.start_btn.state(["disabled"])
 
         # Own row: the current step ("Video 1 of 3: Translating into Turkish… 0:42") is long.
         ttk.Label(main, textvariable=self.status_var).grid(row=4, column=0, sticky="w")
-        self.progress = ttk.Progressbar(main, mode="determinate", maximum=100)
-        self.progress.grid(row=5, column=0, sticky="ew", pady=4)
+        pf = ttk.Frame(main)
+        pf.grid(row=5, column=0, sticky="ew", pady=4)
+        pf.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(pf, mode="determinate", maximum=100)
+        self.progress.grid(row=0, column=0, sticky="ew")
+        # Time left for the whole batch (only while several videos are to do).
+        ttk.Label(pf, textvariable=self.batch_eta_var).grid(row=0, column=1, sticky="e",
+                                                            padx=(8, 0))
 
         self.log_text = ScrolledText(main, height=8, wrap="word", state="disabled",
                                      font=("Consolas", 9))
@@ -608,6 +812,60 @@ class App:
         self.status_var.set(self._status_fn())
         self._update_queue_buttons()
         self._update_review_check()
+
+    def _text_width(self, texts, minimum: int = 0) -> int:
+        """Entry width (in widths of "0", as Tk counts) that shows the longest text in full."""
+        from tkinter import font
+        try:
+            f = font.nametofont("TkTextFont", root=self.root)
+            zero = max(1, f.measure("0"))
+            need = max((f.measure(x) for x in texts), default=0)
+            return max(minimum, math.ceil(need / zero) + 1)
+        except tk.TclError:
+            return max([minimum] + [len(x) + 1 for x in texts])
+
+    def _build_options(self, sf) -> None:
+        """Speech clean-up, transcript files and (folded away) the advanced options,
+        under the other settings."""
+        opts = ttk.Frame(sf)
+        opts.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        opts.columnconfigure(1, weight=1)
+        cb = ttk.Checkbutton(opts, text=t("check_clean_audio"), variable=self.clean_audio_var)
+        cb.grid(row=0, column=0, sticky="w")
+        ttk.Label(opts, text=t("hint_clean_audio"), foreground="gray").grid(
+            row=0, column=1, sticky="w", padx=6)
+        self.inputs.append(cb)
+
+        ef = ttk.Frame(opts)
+        ef.grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        ttk.Label(ef, text=t("label_export")).pack(side="left")
+        for fmt in EXPORT_FORMATS:
+            cb = ttk.Checkbutton(ef, text=t("check_export_" + fmt), variable=self.export_vars[fmt])
+            cb.pack(side="left", padx=(8, 0))
+            self.inputs.append(cb)
+        self.advanced_btn = ttk.Button(opts, command=self._toggle_advanced)
+        self.advanced_btn.grid(row=0, column=2, rowspan=2, sticky="se")
+
+        self.advanced = ttk.Frame(opts)
+        cb = ttk.Checkbutton(self.advanced, text=t("check_retime"), variable=self.retime_var)
+        cb.pack(side="left")
+        ttk.Label(self.advanced, text=t("hint_retime"), foreground="gray").pack(
+            side="left", padx=6)
+        self.inputs.append(cb)
+        self._show_advanced()
+        self._rows.append((opts, 8))
+
+    def _show_advanced(self) -> None:
+        arrow = "▾" if self._advanced_open else "▸"
+        self.advanced_btn.configure(text=f"{arrow} {t('btn_advanced')}")
+        if self._advanced_open:
+            self.advanced.grid(row=2, column=0, columnspan=3, sticky="w", pady=(3, 0))
+        else:
+            self.advanced.grid_remove()
+
+    def _toggle_advanced(self) -> None:
+        self._advanced_open = not self._advanced_open
+        self._show_advanced()
 
     def _fit_min_size(self) -> None:
         """Minimum window size: the design minimum, or wider if this language's buttons
@@ -762,6 +1020,7 @@ class App:
                 with self._lock:
                     self._pending.append((iid, path))
                 self._run_total += 1
+        self._probe_durations(videos)
         if added:
             self.settings["last_folder"] = os.path.dirname(videos[0])
             self._log(t("log_added", n=added))
@@ -820,6 +1079,9 @@ class App:
 
     def _status_label(self, item: QueueItem) -> str:
         if item.status == WORKING:
+            if item.eta is not None:
+                return t("status_working_eta", pct=int(item.progress * 100),
+                         eta=format_eta(item.eta, short=True))
             return t("status_working", pct=int(item.progress * 100))
         return t("status_" + item.status)
 
@@ -885,6 +1147,10 @@ class App:
                                             if len(names) > 4 else "")
             self.targets_var.set(t("targets_selected", n=len(names), names=shown))
 
+    def _export_formats(self) -> tuple[str, ...]:
+        """Transcript formats to save with the subtitles ("docx", "txt")."""
+        return tuple(fmt for fmt in EXPORT_FORMATS if self.export_vars[fmt].get())
+
     def _burn_style(self):
         """engine.BurnStyle from the burn controls (dict if the engine is missing)."""
         return self.burn_options.make_style(engine) if engine else self.burn_options.values()
@@ -901,6 +1167,9 @@ class App:
             "burn": bool(self.burn_var.get()),
             "review": bool(self.review_var.get()),
             "burn_style": self.burn_options.values(),
+            "clean_audio": bool(self.clean_audio_var.get()),
+            "retime_translation": bool(self.retime_var.get()),
+            "export_formats": list(self._export_formats()),
         })
         self.settings.pop("target_lang", None)   # old single-language setting
         save_settings(self.settings)
@@ -1053,6 +1322,26 @@ class App:
     def open_subtitles_dialog(self) -> None:
         OpenSubtitlesDialog(self)
 
+    def make_transcript(self, srt: str | None = None):
+        """File > Make a transcript from subtitles: pick an SRT, then format/timestamps."""
+        if not srt:
+            item = self._selected_item()
+            first = next(iter(((item.result or {}).get("translated_srts") or {}).values()),
+                         None) if item else None
+            folder = (os.path.dirname(first) if first else None) or self.last_output_dir \
+                or self.output_var.get().strip() or self._initial_dir()
+            srt = filedialog.askopenfilename(title=t("dlg_choose_srt"), filetypes=srt_types(),
+                                             initialdir=folder if folder and os.path.isdir(folder)
+                                             else None)
+        if not srt:
+            return None
+        srt = os.path.normpath(srt)
+        if not os.path.isfile(srt):
+            messagebox.showerror(t("app_name"), t("srt_not_found", path=srt))
+            return None
+        return editor.export_transcript(
+            self.root, srt, on_done=lambda path: self._log(t("log_transcript_saved", path=path)))
+
     # ------------------------------------------------------------ batch processing
 
     @property
@@ -1089,7 +1378,12 @@ class App:
             burn=bool(self.burn_var.get()) and not self.review_var.get(),
             burn_style=self._burn_style(),
             output_dir=output_dir,
+            # Newer engine options: passed only if this engine knows them (_worker_main).
+            retime_translation=bool(self.retime_var.get()),
+            clean_audio=bool(self.clean_audio_var.get()),
+            export_formats=self._export_formats(),
         )
+        self._log_unsupported_options()
         # Review first: the videos are burned from the editor after checking.
         self._review_run = bool(self.burn_var.get()) and bool(self.review_var.get())
         self._remember()
@@ -1103,6 +1397,10 @@ class App:
         self._run_total, self._run_finished = len(jobs), 0
         self._run_counts = collections.Counter()
         self._failures = []
+        self._run_times = []
+        self._eta, self._video_left, self._batch_left = None, None, None
+        self.batch_eta_var.set("")
+        self._probe_durations([p for _, p in jobs])
         self.progress["value"] = 0
         self._set_status(lambda: t("status_starting"))
         self._log(t("log_batch_start", n=len(jobs),
@@ -1115,9 +1413,25 @@ class App:
                                        daemon=True)
         self.worker.start()
 
+    NEW_OPTIONS = ("retime_translation", "clean_audio", "export_formats")
+
+    def _log_unsupported_options(self) -> None:
+        """Tell the user when a chosen option is not known to this engine (it is ignored)."""
+        accepted = supported_kwargs(engine.process_video, {k: 1 for k in self.NEW_OPTIONS})
+        defaults = {"retime_translation": True, "clean_audio": False, "export_formats": ()}
+        ignored = [k for k in self.NEW_OPTIONS
+                   if k not in accepted and self._run_opts.get(k) != defaults[k]]
+        if ignored:
+            names = {"retime_translation": t("check_retime"),
+                     "clean_audio": t("check_clean_audio"), "export_formats": t("label_export")}
+            self._log(t("log_option_unsupported",
+                        options="; ".join(names[k].rstrip(":") for k in ignored)))
+
     def _worker_main(self, opts: dict, cancel: threading.Event) -> None:
         """Background thread: processes queued videos one by one."""
         put = self.queue.put
+        extra = supported_kwargs(engine.process_video,
+                                 {k: opts[k] for k in self.NEW_OPTIONS if k in opts})
         while not cancel.is_set():
             with self._lock:
                 if not self._pending:
@@ -1132,7 +1446,7 @@ class App:
                     output_dir=opts["output_dir"],
                     log=lambda msg: put(("log", str(msg))),
                     progress=lambda p, iid=iid: put(("item_progress", (iid, p))),
-                    cancel=cancel)
+                    cancel=cancel, **extra)
                 put(("item_done", (iid, result)))
             except Exception as exc:
                 if isinstance(exc, engine.Cancelled) or cancel.is_set():
@@ -1170,6 +1484,10 @@ class App:
         if videos:
             text += "  ·  " + (t("result_one_video") if videos == 1
                                else t("result_n_videos", n=videos))
+        formats = transcript_formats(result)
+        if formats:
+            text += "  ·  " + t("result_transcripts",
+                                formats=", ".join(t("fmt_" + f) for f in formats))
         return text
 
     def _update_overall(self, current: float = 0.0) -> None:
@@ -1218,7 +1536,63 @@ class App:
             if self._phase_detail:
                 key, value = self._phase_detail
                 text += f"  ({t(key, n=value)})"
+        if self._video_left is not None:
+            text += "  ·  " + format_eta(self._video_left)
         self._set_status(lambda: text)
+
+    # ------------------------------------------------------------ time left
+
+    def _probe_durations(self, paths) -> None:
+        """Find the videos' lengths in the background (for the batch's time left)."""
+        todo = [p for p in paths if os.path.normcase(p) not in self._durations]
+        if not todo:
+            return
+        if self._probe_queue is None:
+            self._probe_queue = queue.Queue()
+            threading.Thread(target=self._probe_worker, args=(self._probe_queue,),
+                             daemon=True).start()
+        for path in todo:
+            self._durations[os.path.normcase(path)] = None     # asked, not known yet
+            self._probe_queue.put(path)
+
+    def _probe_worker(self, paths: queue.Queue) -> None:
+        while True:
+            path = paths.get()
+            try:
+                seconds = probe_duration(path)
+            except Exception:
+                seconds = None
+            self.queue.put(("duration", (path, seconds)))
+
+    def _msg_duration(self, payload) -> None:
+        path, seconds = payload
+        self._durations[os.path.normcase(path)] = seconds
+
+    def _update_eta(self, force: bool = False) -> None:
+        """Recompute the time left (about once a second) for the running video (Status
+        column, status line) and the whole batch (next to the progress bar)."""
+        now = time.monotonic()
+        if not force and now - self._eta_shown < 1.0:
+            return
+        self._eta_shown = now
+        item = self.items.get(self._current_iid or "")
+        waiting = []
+        if not self.running or self._eta is None or item is None or self._closing \
+                or (self.cancel_event and self.cancel_event.is_set()):
+            self._video_left = self._batch_left = None
+        else:
+            self._video_left = self._eta.remaining(now)
+            with self._lock:
+                waiting = [p for _, p in self._pending]
+            self._batch_left = batch_remaining(
+                self._video_left, self._eta.elapsed(now),
+                self._durations.get(os.path.normcase(item.path)),
+                [self._durations.get(os.path.normcase(p)) for p in waiting], self._run_times)
+        if item is not None and item.status == WORKING and item.eta != self._video_left:
+            item.eta = self._video_left
+            self._render_item(self._current_iid)
+        self.batch_eta_var.set(t("eta_batch", eta=format_eta(self._batch_left))
+                               if waiting and self._batch_left is not None else "")
 
     def _set_busy_bar(self, busy: bool) -> None:
         """Animate the progress bar while a step gives no progress (model loading,
@@ -1246,6 +1620,8 @@ class App:
                     handler(payload)
         except queue.Empty:
             pass
+        if self.running:
+            self._update_eta()
         if self.running and self._phase:
             self._show_phase()                # keeps the elapsed time ticking
         self.root.after(100, self._poll_queue)
@@ -1259,7 +1635,9 @@ class App:
         item = self.items.get(iid)
         if item:
             self._log(f"--- {item.path}")
-        self._set_item(iid, status=WORKING, progress=0.0)
+        self._eta = EtaEstimator()
+        self._video_left = None
+        self._set_item(iid, status=WORKING, progress=0.0, eta=None)
         self._set_phase("phase_starting")
 
     def _msg_item_progress(self, payload) -> None:
@@ -1274,6 +1652,8 @@ class App:
             item.progress = p
             if changed:
                 self._render_item(iid)
+        if self._eta is not None and iid == self._current_iid:
+            self._eta.update(p)
         if p > self._phase_progress + 0.005:
             self._set_busy_bar(False)         # real progress again
         if not self._busy_bar:
@@ -1282,8 +1662,15 @@ class App:
     def _msg_item_done(self, payload) -> None:
         iid, result = payload
         result = result or {}
-        self._finish_item()
         item = self.items.get(iid)
+        if self._eta is not None and item is not None:      # for the batch's time left
+            length = self._durations.get(os.path.normcase(item.path))
+            if not length and isinstance(result.get("audio_duration"), (int, float)) \
+                    and result["audio_duration"] > 0:
+                length = float(result["audio_duration"])      # ffprobe failed, the engine knows
+                self._durations[os.path.normcase(item.path)] = length
+            self._run_times.append((self._eta.elapsed(), length))
+        self._finish_item()
         if not item:
             return
         status = REVIEW if self._review_run and result.get("translated_srts") else DONE
@@ -1297,6 +1684,8 @@ class App:
             self._log(t("log_srt", lang=self._lang_name(lang), path=path))
         for lang, path in (result.get("burned_videos") or {}).items():
             self._log(t("log_video", lang=self._lang_name(lang), path=path))
+        for lang, path in transcript_paths(result):
+            self._log(t("log_transcript", lang=self._lang_name(lang), path=path))
         first = next(iter((result.get("translated_srts") or {}).values()), None)
         if first:
             self.last_output_dir = os.path.dirname(os.path.abspath(first))
@@ -1317,7 +1706,12 @@ class App:
         self._run_counts[CANCELLED] += 1
 
     def _finish_item(self) -> None:
+        item = self.items.get(self._current_iid or "")
+        if item:
+            item.eta = None
         self._current_iid = None
+        self._eta, self._video_left, self._batch_left = None, None, None
+        self.batch_eta_var.set("")
         self._run_finished += 1
         self._phase = ""
         self._set_busy_bar(False)
@@ -1347,7 +1741,9 @@ class App:
         if counts[REVIEW]:
             self._log(t("log_review_hint"))
         self.root.bell()
-        if self._failures:
+        # Shut down when everything ran (failures included), never after Cancel.
+        shutdown = bool(self.shutdown_var.get()) and not cancelled
+        if self._failures and not shutdown:    # nobody is there to click the popup away
             lines = "\n".join(f"•  {name}:\n    {render_error(info)}"
                               for name, info in self._failures[:5])
             if len(self._failures) > 5:
@@ -1357,12 +1753,55 @@ class App:
         # A language chosen during the batch applies now.
         if self._pending_language and not self.running and not self._closing:
             self.set_ui_language(self._pending_language)
+        if shutdown and not self.running and not self._closing:
+            self._remember()
+            self._shutdown_dialog = ShutdownCountdown(self, SHUTDOWN_COUNTDOWN,
+                                                      self._summary(counts))
+
+    # ------------------------------------------------------------ shut down when finished
+
+    def _save_log(self) -> str | None:
+        """Write the log to logs\\log-<date>.log next to settings.json (never next to the
+        videos). Returns the path, None if it could not be written."""
+        folder = os.path.join(os.path.dirname(os.path.abspath(SETTINGS_PATH)), "logs")
+        path = os.path.join(folder, time.strftime("log-%Y%m%d-%H%M%S.log"))
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.log_text.get("1.0", "end-1c") + "\n")
+        except OSError:
+            return None
+        return path
+
+    def _shutdown_now(self) -> None:
+        """Countdown over (or "Shut down now"): save everything, then shut Windows down."""
+        self._shutdown_dialog = None
+        for ed in list(self.editors.values()):     # keep edits made while the batch ran
+            if not ed.closed and ed.dirty:
+                ed.save()
+        self._remember()
+        self._log(t("log_shutdown"))
+        path = self._save_log()
+        if path:
+            self._log(t("log_saved_log", path=path))
+        try:
+            run_shutdown()
+        except Exception as exc:
+            self._log(t("shutdown_failed", error=exc))
+            messagebox.showerror(t("app_name"), t("shutdown_failed", error=friendly_error(exc)))
+
+    def _shutdown_cancelled(self) -> None:
+        self._shutdown_dialog = None
+        self.shutdown_var.set(False)
+        self._log(t("log_shutdown_cancelled"))
 
     # ------------------------------------------------------------ closing
 
     def _on_close(self) -> None:
         if self._closing:
             return
+        if self._shutdown_dialog is not None:     # closing the window = no shutdown
+            self._shutdown_dialog.cancel()
         # Editors first: "Save changes?" -> Cancel keeps everything (batch included) running.
         for ed in list(self.editors.values()):
             if not ed.closed and not ed.close():
@@ -1386,6 +1825,88 @@ class App:
             self.root.after(100, lambda: self._quit_when_idle(deadline))
             return
         self.root.destroy()
+
+
+# ---------------------------------------------------------------- shutdown countdown
+
+class ShutdownCountdown(tk.Toplevel):
+    """"The PC will shut down in 60 seconds" with Shut down now / Cancel. Closing the
+    dialog (or Esc) cancels; Cancel has the focus, so a stray Enter never shuts down."""
+
+    def __init__(self, app: App, seconds: int, summary: str):
+        super().__init__(app.root)
+        self.app = app
+        self.left = max(1, int(seconds))
+        self.summary = summary
+        self._after = None
+        self._done = False
+        self.title(t("shutdown_title"))
+        if app.root.state() != "iconic":     # transient to a minimized window = hidden
+            self.transient(app.root)
+        self.resizable(False, False)
+        try:
+            self.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        body = ttk.Frame(self, padding=14)
+        body.pack(fill="both", expand=True)
+        self.text = ttk.Label(body, justify="left", wraplength=int(380 * app.scale))
+        self.text.pack(anchor="w")
+        self.bar = ttk.Progressbar(body, mode="determinate", maximum=self.left,
+                                   length=int(380 * app.scale))
+        self.bar.pack(fill="x", pady=(10, 0))
+        buttons = ttk.Frame(body)
+        buttons.pack(anchor="e", pady=(12, 0))
+        self.now_btn = ttk.Button(buttons, text=t("shutdown_now"), command=self.now)
+        self.now_btn.pack(side="left", padx=(0, 6))
+        self.cancel_btn = ttk.Button(buttons, text=t("btn_cancel"), command=self.cancel)
+        self.cancel_btn.pack(side="left")
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.bind("<Escape>", lambda e: self.cancel())
+        self._show()
+        self.cancel_btn.focus_set()
+        try:
+            self.grab_set()           # no new batch can start meanwhile
+        except tk.TclError:
+            pass
+        self._after = self.after(1000, self._tick)
+
+    def _show(self) -> None:
+        self.text.configure(text=t("shutdown_text", summary=self.summary, n=self.left))
+        self.bar["value"] = self.bar["maximum"] - self.left
+
+    def _tick(self) -> None:
+        self._after = None
+        if self._done:
+            return
+        self.left -= 1
+        if self.left <= 0:
+            self.now()
+            return
+        self._show()
+        self._after = self.after(1000, self._tick)
+
+    def _close(self) -> bool:
+        if self._done:
+            return False
+        self._done = True
+        if self._after:
+            self.after_cancel(self._after)
+            self._after = None
+        try:
+            self.grab_release()
+            self.destroy()
+        except tk.TclError:
+            pass
+        return True
+
+    def now(self) -> None:
+        if self._close():
+            self.app._shutdown_now()
+
+    def cancel(self) -> None:
+        if self._close():
+            self.app._shutdown_cancelled()
 
 
 # ---------------------------------------------------------------- open subtitles dialog

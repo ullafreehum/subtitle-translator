@@ -207,11 +207,210 @@ def test_cancel(p: dict[str, str], out: str) -> None:
     check(not leftovers, f"no temp folders left: {leftovers}")
 
 
+FIXTURE = ROOT / "tests" / "fixtures" / "sample_segments.json"
+
+
+def _fake_translate(texts, source, target, translator="nllb", glossary=None, log=print,
+                    progress=lambda p: None, cancel=None, return_groups=False):
+    """Stand-in for translation.translate_texts: a "translation" twice as long per sentence."""
+    import translation
+
+    groups = translation._sentence_groups(texts)
+    full = [(g, " ".join(" ".join(texts[i].split()) for i in g) + " Bu çevirinin uzun bir eki, evet.")
+            for g in groups]
+    progress(1.0)
+    if return_groups:
+        return full
+    out = list(texts)
+    for g, t in full:
+        for i in g:
+            out[i] = f"[{target}] " + texts[i]
+    return out
+
+
+def _fake_translate_old(texts, source, target, translator="nllb", glossary=None, log=print,
+                        progress=lambda p: None, cancel=None):
+    """translate_texts before return_groups existed."""
+    return [f"[{target}] " + t for t in texts]
+
+
+def _no_overlaps(cues) -> bool:
+    return all(b.start - a.end >= 0.08 - 1e-9 and a.end > a.start for a, b in zip(cues, cues[1:]))
+
+
+def test_retime_and_exports(p: dict[str, str], out: str) -> None:
+    """process_video without AI models: Whisper and the translator are stand-ins."""
+    import docx
+    import json
+    import translation
+    from subtitles import read_srt
+
+    print("\n== re-timed translations, transcripts, stages (stand-in Whisper/translator)")
+    segments = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    calls = []
+
+    def fake_transcribe(wav, source, model_size, prompt, log, progress, cancel, checkpoint=None):
+        calls.append(os.path.getsize(wav))
+        progress(1.0)
+        return [dict(s, text=" ".join(s["text"].split())) for s in segments], "en"
+
+    real_transcribe, real_translate = engine.transcribe, translation.translate_texts
+    engine.transcribe, translation.translate_texts = fake_transcribe, _fake_translate
+    d = os.path.join(out, "retime")
+    os.makedirs(d)
+    stages: list[tuple[str, dict]] = []
+    lines: list[str] = []
+    try:
+        res = engine.process_video(p["video.mp4"], ["tr", "en"], source_lang="en", output_dir=d,
+                                   log=lines.append, burn=True, export_formats=("docx", "txt", "md"),
+                                   stage=lambda name, info: stages.append((name, info)))
+        orig, tr = read_srt(res["original_srt"]), read_srt(res["translated_srts"]["tr"])
+        check(len(tr) != len(orig) and _no_overlaps(tr), f"re-timed: {len(orig)} -> {len(tr)} cues, no overlaps")
+        check(all(len(c.text.split("\n")) <= 2 and all(len(x) <= 42 for x in c.text.split("\n")) for c in tr),
+              "re-timed cues: 2 lines x 42")
+        check(" ".join(" ".join(c.text.split()) for c in tr).count("Bu çevirinin uzun bir eki, evet.")
+              == len(translation._sentence_groups([c.text for c in orig])), "every sentence's text kept")
+        check(tr[0].start == orig[0].start and abs(tr[-1].end - orig[-1].end) < 6, "same overall span")
+        check(set(res) >= {"transcripts", "audio_duration", "resumed_from", "timings"}, f"result keys: {sorted(res)}")
+        check(abs(res["audio_duration"] - 3.0) < 0.2 and res["resumed_from"] == 0, f"duration {res['audio_duration']}")
+        check(set(res["timings"]["translate"]) == {"tr"} and set(res["timings"]["burn"]) == {"tr", "en"},
+              f"timings: {res['timings']}")
+        check([s for s, _ in stages] == ["audio", "transcribe", "translate", "burn", "burn"],
+              f"stages: {[s for s, _ in stages]}")
+        check(stages[1][1]["start"] == engine._P_AUDIO and stages[1][1]["audio_duration"] > 2.5,
+              f"stage info: {stages[1][1]}")
+        check(any(x.startswith("Audio length: 0:03") for x in lines), "audio length logged")
+        names = {lang: sorted(os.path.basename(x) for x in v) for lang, v in res["transcripts"].items()}
+        stem = Path(p["video.mp4"]).stem
+        check(names == {lang: [f"{stem}.{lang}.transcript.{f}" for f in ("docx", "md", "txt")]
+                        for lang in ("en", "tr")}, f"transcripts: {names}")
+        doc = docx.Document(os.path.join(d, f"{stem}.tr.transcript.docx"))
+        paras = [x for x in doc.paragraphs if x.text]
+        check(paras[0].style.name == "Title" and paras[0].text == stem, f"docx title: {paras[0].text!r}")
+        check(paras[1].text.startswith("Dil: Türkçe · Tarih: "), f"docx header: {paras[1].text!r}")
+        body = paras[2:]
+        check(len(body) >= 2 and all(x.text.startswith("[00:00:") for x in body), f"docx paragraphs: {len(body)}")
+        check(body[0].runs[0].font.color.rgb is not None, "docx timestamp is grey")
+        txt = Path(d, f"{stem}.en.transcript.txt").read_text(encoding="utf-8")
+        check(txt.startswith(f"{stem}\n") and "Language: English · Date: " in txt and "[00:00:00] What did" in txt,
+              f"txt: {txt[:80]!r}")
+        check(os.path.isfile(res["burned_videos"]["tr"]), "burning a re-timed SRT works")
+
+        # Old behaviour on request: the original timings, one translation per cue.
+        res = engine.process_video(p["video.mp4"], ["tr"], source_lang="en", output_dir=d, log=lambda m: None,
+                                   retime_translation=False)
+        tr = read_srt(res["translated_srts"]["tr"])
+        check([(c.start, c.end) for c in tr] == [(c.start, c.end) for c in orig], "retime_translation=False")
+        # A translation.py without return_groups: groups are rebuilt from the per-cue texts.
+        translation.translate_texts = _fake_translate_old
+        res = engine.process_video(p["video.mp4"], ["tr"], source_lang="en", output_dir=d, log=lambda m: None)
+        tr = read_srt(res["translated_srts"]["tr"])
+        check(_no_overlaps(tr) and " ".join(c.text for c in tr).count("[tr]") == len(orig),
+              "older translation.py still works")
+
+        # The large translator: Whisper is released from the GPU first.
+        translation.translate_texts = _fake_translate
+        freed = []
+        old_free = getattr(translation, "free_gpu_models", None)
+        translation.free_gpu_models = lambda: freed.append(1)
+        engine._MODEL_CACHE[("tiny", "cuda")] = object()
+        lines.clear()
+        engine.process_video(p["video.mp4"], ["tr"], source_lang="en", output_dir=d, log=lines.append,
+                             translator="nllb_large")
+        check(("tiny", "cuda") not in engine._MODEL_CACHE and freed and
+              any(x.startswith("Freed the speech recognition model from the GPU") for x in lines),
+              "nllb_large: Whisper and the small NLLB freed before translating")
+        if old_free is None:
+            del translation.free_gpu_models
+        else:
+            translation.free_gpu_models = old_free
+        e = error_of(engine.process_video, p["video.mp4"], ["tr"], output_dir=d, log=lambda m: None,
+                     export_formats=("pdf",))
+        check(isinstance(e, ValueError) and "transcript format" in str(e), f"bad format: {e}")
+    finally:
+        engine.transcribe, translation.translate_texts = real_transcribe, real_translate
+
+
+def test_checkpoint(p: dict[str, str], out: str) -> None:
+    print("\n== checkpoints (resume after a crash)")
+    import json
+
+    path = Path(out, "ck.jsonl")
+    ck = engine._Checkpoint(path)
+    check(ck.position == 0 and not ck.segments and not path.exists(), "new checkpoint: empty, no file yet")
+    ck.start("tr")
+    ck.add({"start": 1.0, "end": 2.5, "text": "Merhaba.", "words": [{"start": 1.0, "end": 2.5, "word": " Merhaba."}]}, 2.5)
+    ck.add(None, 4.0)   # skipped noise
+    with open(path, "a", encoding="utf-8") as f:
+        f.write('{"seg": {"start": 5.0, "en')           # power cut in the middle of a line
+    ck = engine._Checkpoint(path)
+    check(ck.language == "tr" and ck.position == 4.0 and len(ck.segments) == 1 and not ck.complete,
+          f"reloaded after a damaged tail: {ck.language}, {ck.position}, {len(ck.segments)}")
+    ck.add({"start": 4.5, "end": 6.0, "text": "Devam.", "words": []}, 6.0)
+    ck.finish()
+    ck = engine._Checkpoint(path)
+    check(ck.complete and ck.position == 6.0 and [s["text"] for s in ck.segments] == ["Merhaba.", "Devam."],
+          "damaged line dropped, appending continues, completion saved")
+    ck.remove()
+    check(not path.exists(), "removed")
+
+    a = engine._checkpoint_path(Path(p["video.mp4"]), "tiny", "en", False, print)
+    check(a is not None and a.parent == engine.CHECKPOINT_DIR, f"checkpoint folder: {a}")
+    check(a != engine._checkpoint_path(Path(p["video.mp4"]), "base", "en", False, print)
+          and a != engine._checkpoint_path(Path(p["video.mp4"]), "tiny", None, False, print)
+          and a != engine._checkpoint_path(Path(p["video.mp4"]), "tiny", "en", True, print),
+          "model, language and cleanup are part of the key")
+
+    # A run interrupted after speech recognition: the next run uses the saved result.
+    segments = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    ck = engine._Checkpoint(a)
+    ck.start("en")
+    for s in segments:
+        ck.add({**s, "text": " ".join(s["text"].split())}, s["end"])
+    ck.finish()
+    real = engine.transcribe
+    engine.transcribe = lambda *a, **k: (_ for _ in ()).throw(AssertionError("transcribe called"))
+    lines: list[str] = []
+    try:
+        res = engine.process_video(p["video.mp4"], ["en"], source_lang="en", model_size="tiny",
+                                   output_dir=os.path.join(out, "resume"), log=lines.append)
+        check(res["resumed_from"] == segments[-1]["end"] and lines[0].startswith("Speech recognition was "
+              "already finished"), f"complete checkpoint reused: {lines[:1]}")
+        check(not a.exists(), "checkpoint deleted when the video is finished")
+    finally:
+        engine.transcribe = real
+
+
+def test_clean_audio(p: dict[str, str], out: str) -> None:
+    print("\n== audio cleanup filter")
+    msgs: list[str] = []
+    wav = os.path.join(out, "clean.wav")
+    engine.extract_audio(p["video.mp4"], wav, msgs.append, clean=True)
+    dur = engine._media_duration(wav)
+    check(abs(dur - 3.0) < 0.2 and "noise and echo" in msgs[0], f"cleaned audio: {dur:.2f}s, {msgs}")
+    check(probe(wav, "stream=sample_rate,channels") == ["16000,1"], "16 kHz mono")
+
+    class Fake:
+        class model:
+            @staticmethod
+            def unload_model():
+                unloaded.append(1)
+    unloaded: list[int] = []
+    engine._MODEL_CACHE.update({("tiny", "cuda"): Fake(), ("tiny", "cpu"): Fake()})
+    check(engine.free_speech_model() == 1 and list(engine._MODEL_CACHE) == [("tiny", "cpu")] and unloaded,
+          "free_speech_model frees the GPU model only")
+    check(engine.free_speech_model(device=None) == 1 and not engine._MODEL_CACHE, "device=None frees all")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="test_engine_") as d:
         out = os.path.join(d, "out")
         os.makedirs(out)
+        engine.CHECKPOINT_DIR = Path(d, "checkpoints")   # not the user's %LOCALAPPDATA%
         p = make_inputs(d)
+        test_retime_and_exports(p, out)
+        test_checkpoint(p, out)
+        test_clean_audio(p, out)
         test_input_errors(p, out)
         test_ffmpeg_missing(p)
         test_burn(p, out)
