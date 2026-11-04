@@ -1,0 +1,39 @@
+# Python / virtual environment
+.venv/
+.venv.old/
+__pycache__/
+*.py[cod]
+
+# Downloaded models (Whisper, NLLB) - fetched again on first run
+models/
+
+# Local test runs
+test_output*/
+
+# Per-user files
+settings.json
+glossary.txt
+*.log
+*.bak
+.claude/settings.local.json
+
+# PyInstaller (the project's own spec file is kept)
+build/
+dist/
+*.spec
+!SubtitleTranslator.spec
+
+# Subtitles and videos produced while using the app (test fixtures are kept)
+*.srt
+*.vtt
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.m4a
+*.wav
+*.mp3
+!tests/fixtures/**
+# Backups made by the program (your glossary, re-processed subtitles)
+*.bak-*

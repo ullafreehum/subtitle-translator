@@ -1,0 +1,24 @@
+# Subtitle Translator - Python 3.12 dependencies (installed by setup.bat)
+# ffmpeg / ffprobe / ffplay are separate programs; setup.bat installs them too.
+
+# Speech recognition (Whisper on CTranslate2). Also brings ctranslate2 (also used to
+# run the offline NLLB translation model), tokenizers, huggingface_hub and onnxruntime.
+# Upper limits keep a new PC on the tested major versions (tested: faster-whisper 1.2.1,
+# ctranslate2 4.8.5). A future ctranslate2 5.x may need other CUDA/cuDNN versions than the
+# nvidia-*-cu12 / cuDNN 9 wheels below.
+faster-whisper>=1.2,<2
+ctranslate2>=4.5,<5
+
+# Audio decoding used by faster-whisper. faster-whisper 1.2.1 breaks with newer PyAV.
+av<16
+
+# Online translation (Google, with MyMemory as backup).
+deep-translator
+
+# Drag & drop of video files onto the window.
+tkinterdnd2
+
+# NVIDIA CUDA libraries for GPU speech recognition (no separate CUDA install needed).
+# Without an NVIDIA GPU these are simply unused and the app runs on the CPU.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

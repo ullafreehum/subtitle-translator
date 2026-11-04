@@ -1,0 +1,8 @@
+# Windows scripts must keep CRLF line endings in every checkout and in the GitHub ZIP
+# download: cmd.exe misreads LF-only .bat files (labels/goto can fail).
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+# Binary assets
+*.ico  binary
+*.png  binary
