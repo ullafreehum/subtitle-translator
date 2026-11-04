@@ -902,7 +902,10 @@ if __name__ == "__main__":
     parser.add_argument("--to", nargs="+", required=True, help="target language(s), e.g. tr en")
     parser.add_argument("--from", dest="src", default=None, help="source language (default: auto-detect)")
     parser.add_argument("--model", default=DEFAULT_MODEL, choices=MODEL_SIZES)
-    parser.add_argument("--translator", default=DEFAULT_TRANSLATOR, choices=sorted(getattr(translation, "_TRANSLATOR_IDS", set(TRANSLATORS.values()))))
+    # Only the translators that can run here ("nllb_large" needs its model installed).
+    installed = (translation.available_translators() if hasattr(translation, "available_translators")
+                 else TRANSLATORS)
+    parser.add_argument("--translator", default=DEFAULT_TRANSLATOR, choices=sorted(set(installed.values())))
     parser.add_argument("--glossary", default=None, help="glossary file (default: glossary.txt)")
     parser.add_argument("--out", default=None, help="output folder (default: video folder)")
     parser.add_argument("--vtt", action="store_true", help="also write WebVTT files")
