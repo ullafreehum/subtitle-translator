@@ -19,13 +19,9 @@
 - 🎬 **Videoya gömer:** Altta ya da üstte, istediğiniz boyutta, isterseniz arka plan kutusuyla.
 - 📂 **Toplu çalışır:** Videoları ya da bütün bir klasörü sürükleyip bırakın, gerisini o halletsin.
 
-## 📚 Asıl gücü: DİLGEM Sözlüğü
+## 📚 DİLGEM Sözlüğü
 
-Sıradan çeviri programları alan terimlerinde yanılır. *"Authoritative parenting"* sözcüğünü
-**otoriter** diye çevirir; oysa doğrusu tam tersi, **demokratik ebeveynlik**tir. *"Filial therapy"*
-"evlat terapisi" olur, *"range of motion"* "hareket aralığı", *"minimal pairs"* "minimal couples".
-
-Altyazı Çevirici, **5.500'ü aşkın kayıttan oluşan, DİLGEM'in alanlarına özel bir sözlükle** gelir.
+Sıradan çeviri programları alan terimlerinde yanılır. Altyazı Çevirici, **5.500'ü aşkın kayıttan oluşan, DİLGEM'in alanlarına özel bir sözlükle** gelir.
 Terimler önce **DİLGEM'in kendi eğitim materyallerinden**, sonra **Türkçe akademik literatürden**
 seçildi: DSM-5 Türkçe, DergiPark makaleleri, üniversitelerin ergoterapi, fizyoterapi, dil ve konuşma
 terapisi ve özel eğitim bölümlerinin yayınları, MEB 2018 Özel Eğitim Hizmetleri Yönetmeliği, resmî
