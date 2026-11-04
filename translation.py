@@ -163,6 +163,7 @@ def _tr_suffix(word: str, suffix: str) -> str:
             prev = ch
         sfx.append(ch)
     s = "".join(sfx)
+    s = re.sub(r"^(y[aeıiuü])\1", r"\1", s)  # repeated buffer syllable: sandalye + yeye -> sandalyeye
     if suffix.lower().endswith("ki"):  # "-ki" never changes: odasındaki
         s = s[:-2] + "ki"
     last = low[-1]
@@ -172,13 +173,16 @@ def _tr_suffix(word: str, suffix: str) -> str:
     possessive = (" " in word.strip() and low[-1] in "ıiuü"
                   and re.search(r"(?:terapi|pati|pleji|lali|leksi|praksi|fazi|loji|metri|grafi|skopi|fobi|mani)$",
                                 low) is None)
+    if possessive and re.fullmatch(r"n[ıiuü](?:m|n|m[ıiuü]z|n[ıiuü]z)", s):
+        # A personal ending replaces the compound's own: vaka yükü + nüm -> vaka yüküm.
+        return word + s[2:]
     if last in _TR_VOWELS:
         if s[0] in _TR_VOWELS:
             s = ("n" if possessive else "y") + s
         elif possessive and s[0] == "y" and len(s) > 1 and s[1] in _TR_VOWELS:
             s = "n" + s[1:]
-    elif s[0] == "y" and len(s) > 1 and s[1] in _TR_VOWELS:
-        s = s[1:]  # no buffer letter after a consonant: kontrol + yü -> kontrolü
+    elif s[0] in "yn" and len(s) > 1 and s[1] in _TR_VOWELS:
+        s = s[1:]  # no buffer letter after a consonant: kontrol + yü -> kontrolü, otizm + nin -> otizmin
         if len(vowels) > 1 and last in _TR_SOFTEN:
             word = word[:-1] + _TR_SOFTEN[last]
     elif s[0] in _TR_VOWELS:
@@ -226,14 +230,11 @@ class _Terms:
                                     re.IGNORECASE) if common else None)
 
     def prepare(self, text: str) -> str:
-        # Keep a capital letter at the start of a sentence ("Trainees" -> "Kursiyerler").
-        def repl(value: str, matched: str) -> str:
-            if value in self.forced_values and matched[:1].isupper() and value[:1].islower():
-                return _capitalize(value, self.target)
-            return value
-
-        text = self.source_map.sub(text, repl)
-        return self.suffix_map.sub(text, repl) if self.suffix_map is not None else text
+        # Forced terms go in as written. A capital at the start of a sentence is
+        # restored on the translation instead, because the model often moves the
+        # term away from the start ("Vaka yükümüz…" -> "We have too much caseload").
+        text = self.source_map.sub(text)
+        return self.suffix_map.sub(text) if self.suffix_map is not None else text
 
     def finish(self, text: str) -> str:
         text = self.output_map.sub(text)
@@ -690,6 +691,10 @@ def _nllb_translate(texts: list[str], source: str | None, target: str, terms: _T
                 out[k] = candidate
     progress(1.0)
     out = [_fix_spacing(o, target) for o in out]
+    # A sentence that starts with a capital keeps one (a forced term at the start
+    # can make the model begin in lower case: "multidisipliner ekipte...").
+    out = [_capitalize(o, target) if r[:1].isupper() and o[:1].islower() else o
+           for r, o in zip(raw, out)]
     if target in ("zh", "ja", "yue"):
         out = [_cjk_punctuation(o, target) for o in out]
 

@@ -80,7 +80,10 @@ def test_helpers() -> None:
     c = translation._clean_output("Thank you.", "Teşekkür ederim. Teşekkürler.")
     check(c == "Teşekkür ederim.", f"repeat cleanup: {c}")
     terms = translation._Terms(GLOSSARY, "en", "tr")
-    check(terms.prepare("Trainees and trainees.") == "Katılımcılar and katılımcılar.", "prepare keeps capital")
+    # Forced terms go in as written; the capital at a sentence start is restored on the output.
+    check(terms.prepare("Trainees and trainees.") == "katılımcılar and katılımcılar.", "prepare: terms as written")
+    check(translation._Terms(GLOSSARY, "en", "tr").prepare("OTs and SLPs") ==
+          "ergoterapistler and dil ve konuşma terapistleri", "abbreviations translated, no stray capitals")
     f = terms.finish("Katılımcılar'ın Jasper'ı ve Dilgem")
     check(f == "Katılımcıların JASPER'ı ve DİLGEM", f"finish: {f}")
     prot, values = terms.protect("the katılımcılar practice JASPER with JASPER")
@@ -93,6 +96,7 @@ def test_helpers() -> None:
         got = translation._tr_suffix(word, sfx)
         check(got == want, f"Turkish suffix {word}+{sfx}: {got}")
     for word, sfx, want in [("postüral kontrol", "yü", "postüral kontrolü"),
+                            ("tekerlekli sandalye", "yeye", "tekerlekli sandalyeye"),
                             ("davranış müdahale planı", "yı", "davranış müdahale planını")]:
         got = translation._tr_suffix(word, sfx)
         check(got == want, f"Turkish suffix {word}+{sfx}: {got}")

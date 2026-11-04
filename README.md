@@ -21,14 +21,18 @@
 
 ## 📚 DİLGEM Sözlüğü
 
-Sıradan çeviri programları alan terimlerinde yanılır. Altyazı Çevirici, **5.500'ü aşkın kayıttan oluşan, DİLGEM'in alanlarına özel bir sözlükle** gelir.
+Sıradan çeviri programları alan terimlerinde yanılır. Altyazı Çevirici, **8.400'ü aşkın kayıttan oluşan, DİLGEM'in alanlarına özel bir sözlükle** gelir.
 Terimler önce **DİLGEM'in kendi eğitim materyallerinden**, sonra **Türkçe akademik literatürden**
 seçildi: DSM-5 Türkçe, DergiPark makaleleri, üniversitelerin ergoterapi, fizyoterapi, dil ve konuşma
 terapisi ve özel eğitim bölümlerinin yayınları, MEB 2018 Özel Eğitim Hizmetleri Yönetmeliği, resmî
-Türkçe IDDSI belgesi ve testlerin Türkçe uyarlamaları.
+Türkçe IDDSI belgesi, testlerin Türkçe uyarlamaları ve Türkçe araştırma yöntemleri kaynakları.
 
 | Alan | Araştırılan terim | Örnekler |
 |---|---:|---|
+| Kısaltmalar ve meslekler | 423 | OT → ergoterapist, PT → fizyoterapist, SLP → dil ve konuşma terapisti, NICU, gölge öğretmen |
+| Araştırma yöntemleri ve akademik dil | 648 | literatür taraması, sistematik derleme, randomize kontrollü çalışma, örneklem, etki büyüklüğü, hakemli dergi |
+| Temel klinik bilgiler ve nörobilim | 630 | ayırıcı tanı, eş tanı, yaygınlık, nöroplastisite, prefrontal korteks, yan etki |
+| Terapist, ebeveyn ve öğretmen dili | 522 | uyarı işaretleri, vaka yükü, tuvalet eğitimi, sakinleşme köşesi, engellenme toleransı |
 | Psikoloji | 950 | zihin kuramı, yakınsal gelişim alanı, bilişsel ayrışma, felaketleştirme, WISC alt testleri |
 | Dil ve konuşma terapisi | 623 | önleştirme, minimal çiftler, uyarılabilirlik, Lidcombe şiddet puanlama, IDDSI düzeyleri |
 | Özel eğitim | 566 | BEP, kısa dönemli amaç, çoklu yoklama modeli, başlama düzeyi, uygulama güvenirliği |
@@ -41,7 +45,7 @@ Türkçe IDDSI belgesi ve testlerin Türkçe uyarlamaları.
 
 Sözlük yalnızca kelime değiştirmez:
 
-- **Adları korur:** DİLGEM, JASPER, Lidcombe, Landreth ve 190'ı aşkın yöntem ve test adı hep doğru yazılır.
+- **Adları korur:** DİLGEM, JASPER, Lidcombe, Landreth ve 220'yi aşkın yöntem ve test adı hep doğru yazılır.
 - **Yanlış duyulanı düzeltir:** "Çocuk Merkezi Oyun Terapisi" → **Çocuk Merkezli**, "Filaterapi" → **filial terapi**.
 - **Türkçe ekleri bilir:** *pekiştireci*, *öz düzenlemeyi*, *iletişim çemberlerini*, *panik bozukluğu olan*.
 - **Gündelik sözcüklere dokunmaz:** "trunk" araba bagajıysa bagaj kalır, "calms" sakinleştirmektir.

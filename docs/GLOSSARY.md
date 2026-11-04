@@ -1,9 +1,9 @@
 # The DİLGEM glossary: how it was built
 
-`glossary.example.txt` is the glossary the program ships with: about 2,850 English → Turkish
-and 2,500 Turkish → English terms, plus about 190 names, methods and tests kept as written.
+`glossary.example.txt` is the glossary the program ships with: about 4,600 English → Turkish
+and 3,600 Turkish → English terms, plus about 230 names, methods and tests kept as written.
 This page explains where the terms come from, which choices were made, and how they were tested.
-Every researched term (about 3,400 rows), with its Turkish alternatives and source links, is in
+Every researched term (about 5,600 rows), with its Turkish alternatives and source links, is in
 [glossary_sources.tsv](glossary_sources.tsv).
 
 Fields covered: play therapy; autism and developmental interventions; speech and language
@@ -15,7 +15,16 @@ vestibular rehabilitation); psychology (development, clinical, trauma, psychomet
 projective tests, neuropsychology, ACT, schema therapy, solution-focused, family systems,
 Gottman, psychodynamic terms); special education (2018 regulation, BEP, evidence-based
 practices, single-subject research, reading and maths instruction, early intervention,
-ETEÇOM / İVO-ODS); diagnoses (DSM-5); assessment tools.
+ETEÇOM / İVO-ODS); diagnoses (DSM-5); assessment tools. A third round added the basics that
+specialist lists miss: abbreviations and professions (OT → ergoterapist, PT → fizyoterapist,
+SLP → dil ve konuşma terapisti, with plurals and "OT services"-type combinations), research
+methods and academic language (literatür taraması, sistematik derleme, randomize kontrollü
+çalışma, örneklem, etki büyüklüğü, hakemli dergi), clinical/medical/neuroscience basics (ayırıcı
+tanı, eş tanı, yaygınlık, nöroplastisite) and the everyday language of therapists, parents and
+teachers (uyarı işaretleri, vaka yükü, tuvalet eğitimi). On 63 basic sentences, the number with a
+wrong key term dropped from about 20 to 3–4, with no regressions on the earlier 90 test sentences
+or the real recordings. Left on purpose: bare "sample" and "limitations" are not forced (they also
+mean *örnek* and ICF *kısıtlılık*); only "sample size", "limitations of the study" etc. are.
 
 ## Sources, in order of priority
 
